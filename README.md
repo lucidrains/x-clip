@@ -1,3 +1,5 @@
+<img src="./clip.png" width="600px"></img>
+
 ## x-clip (wip)
 
 A concise but complete implementation of <a href="https://openai.com/blog/clip/">CLIP</a> with various experimental improvements from recent papers
