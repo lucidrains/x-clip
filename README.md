@@ -52,3 +52,14 @@ loss.backward()
     primaryClass = {cs.CV}
 }
 ```
+
+```bibtex
+@misc{yao2021filip,
+    title   = {FILIP: Fine-grained Interactive Language-Image Pre-Training}, 
+    author  = {Lewei Yao and Runhui Huang and Lu Hou and Guansong Lu and Minzhe Niu and Hang Xu and Xiaodan Liang and Zhenguo Li and Xin Jiang and Chunjing Xu},
+    year    = {2021},
+    eprint  = {2111.07783},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
