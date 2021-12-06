@@ -1,1 +1,1 @@
-from x_clip.x_clip import XClip
+from x_clip.x_clip import CLIP
