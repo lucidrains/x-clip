@@ -40,6 +40,25 @@ loss = clip(text, images, text_mask = mask, return_loss = True)
 loss.backward()
 ```
 
+## Usage - CLI
+```sh
+train.py [-h] [--datadir DATADIR] [--bpe_path BPE_PATH]
+            [--batch-size BATCH_SIZE] [--num-epochs NUM_EPOCHS]
+            [--learning-rate LEARNING_RATE]
+            [--clip_grad_norm_factor CLIP_GRAD_NORM_FACTOR]
+            [--log_frequency LOG_FREQUENCY]
+            [--ckpt_save_path CKPT_SAVE_PATH] [--overwrite] [--amp]
+            [--dim_text DIM_TEXT] [--dim_image DIM_IMAGE]
+            [--dim_latent DIM_LATENT] [--text_enc_depth TEXT_ENC_DEPTH]
+            [--text_seq_len TEXT_SEQ_LEN] [--text_heads TEXT_HEADS]
+            [--num_visual_tokens NUM_VISUAL_TOKENS]
+            [--visual_enc_depth VISUAL_ENC_DEPTH]
+            [--visual_heads VISUAL_HEADS]
+            [--visual_image_size VISUAL_IMAGE_SIZE]
+            [--visual_patch_size VISUAL_PATCH_SIZE] [--channels CHANNELS]
+            [--use_all_token_embeds]
+```
+
 ## Citations
 
 ```bibtex
