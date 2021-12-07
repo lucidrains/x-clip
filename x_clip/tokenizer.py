@@ -1,16 +1,19 @@
-# take from https://github.com/openai/CLIP/blob/main/clip/simple_tokenizer.py
-# to give users a quick easy start to training DALL-E without doing BPE
-
-import torch
-
 import html
 import os
 from functools import lru_cache
 from pathlib import Path
+
 import ftfy
 import regex as re
+import torch
+import youtokentome as yttm
+
+
+
 
 # OpenAI simple tokenizer
+# taken from https://github.com/openai/CLIP/blob/main/clip/simple_tokenizer.py
+# to give users a quick easy start to training DALL-E without doing BPE
 
 @lru_cache()
 def default_bpe():
@@ -136,6 +139,28 @@ class SimpleTokenizer(object):
         all_tokens = [self.encode(text) for text in texts]
         result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
 
+
+class YttmTokenizer:
+    def __init__(self, bpe_path=None):
+        bpe_path = Path(bpe_path)
+        assert bpe_path.exists(
+        ), f'BPE json path {str(bpe_path)} does not exist'
+        tokenizer = yttm.BPE(model=str(bpe_path))
+        self.tokenizer = tokenizer
+        self.vocab_size = tokenizer.vocab_size()
+
+    def decode(self, tokens, pad_tokens=set()):
+        if torch.is_tensor(tokens): tokens = tokens.tolist()
+        return self.tokenizer.decode(tokens, ignore_ids=pad_tokens.union({0}))
+
+    def encode(self, texts):
+        encoded = self.tokenizer.encode(texts, output_type=yttm.OutputType.ID)
+        return list(map(torch.tensor, encoded))
+
+    def tokenize(self, texts, context_length=256, truncate_text=False):
+        if isinstance(texts, str): texts = [texts]
+        all_tokens = self.encode(texts)
+        result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
         for i, tokens in enumerate(all_tokens):
             if len(tokens) > context_length:
                 if truncate_text:

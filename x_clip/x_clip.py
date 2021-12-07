@@ -12,8 +12,10 @@ from einops.layers.torch import Rearrange
 
 # helper functions
 
+
 def exists(val):
     return val is not None
+
 
 def default(val, d):
     return val if exists(val) else d
@@ -35,7 +37,8 @@ def log(t, eps = 1e-20):
     return torch.log(t + eps)
 
 def l2norm(t):
-    return F.normalize(t, dim = -1, p = 2)
+    return F.normalize(t, dim=-1, p=2)
+
 
 # helper classes
 
@@ -52,38 +55,39 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         return self.fn(self.norm(x), **kwargs)
 
+
 # transformer
 
+
 class FeedForward(nn.Module):
-    def __init__(self, dim, mult = 4, dropout = 0.):
+    def __init__(self, dim, mult=4, dropout=0.):
         super().__init__()
         inner_dim = int(dim * mult)
 
-        self.net = nn.Sequential(
-            nn.Linear(dim, inner_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim)
-        )
+        self.net = nn.Sequential(nn.Linear(dim, inner_dim), nn.GELU(),
+                                 nn.Dropout(dropout),
+                                 nn.Linear(inner_dim, dim))
 
     def forward(self, x):
         return self.net(x)
 
+
 class Attention(nn.Module):
-    def __init__(self, dim, dim_head = 64, heads = 8, dropout = 0.):
+    def __init__(self, dim, dim_head=64, heads=8, dropout=0.):
         super().__init__()
         self.heads = heads
-        self.scale = dim_head ** -0.5
+        self.scale = dim_head**-0.5
         inner_dim = dim_head * heads
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
         self.to_out = nn.Linear(inner_dim, dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask=None):
         h = self.heads
-        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=h),
+                      (q, k, v))
 
         sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
 
@@ -92,53 +96,53 @@ class Attention(nn.Module):
             mask_value = -torch.finfo(sim.dtype).max
             sim = sim.masked_fill(~mask, mask_value)
 
-        attn = sim.softmax(dim = -1)
+        attn = sim.softmax(dim=-1)
         attn = self.dropout(attn)
 
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
 
+
 class Transformer(nn.Module):
-    def __init__(
-        self,
-        dim,
-        *,
-        depth,
-        dim_head = 64,
-        heads = 8,
-        attn_dropout = 0.,
-        ff_dropout = 0.,
-        ff_mult = 4
-    ):
+    def __init__(self,
+                 dim,
+                 *,
+                 depth,
+                 dim_head=64,
+                 heads=8,
+                 attn_dropout=0.,
+                 ff_dropout=0.,
+                 ff_mult=4):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
-                PreNorm(dim, FeedForward(dim = dim, mult = ff_mult)),
-            ]))
+            self.layers.append(
+                nn.ModuleList([
+                    PreNorm(
+                        dim,
+                        Attention(dim=dim,
+                                  dim_head=dim_head,
+                                  heads=heads,
+                                  dropout=attn_dropout)),
+                    PreNorm(dim, FeedForward(dim=dim, mult=ff_mult)),
+                ]))
 
         self.norm_out = nn.LayerNorm(dim)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask=None):
         for attn, ff in self.layers:
-            x = attn(x, mask = mask) + x
+            x = attn(x, mask=mask) + x
             x = ff(x) + x
 
         return self.norm_out(x)
 
+
 # text and vision transformers
 
+
 class TextTransformer(nn.Module):
-    def __init__(
-        self,
-        dim,
-        *,
-        num_tokens,
-        max_seq_len,
-        **kwargs
-    ):
+    def __init__(self, dim, *, num_tokens, max_seq_len, **kwargs):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = nn.Embedding(max_seq_len, dim)
@@ -146,44 +150,37 @@ class TextTransformer(nn.Module):
 
         self.transformer = Transformer(dim, **kwargs)
 
-    def forward(self, x, mask = None):
+    def forward(self, x, mask=None):
         b, n, device = *x.shape, x.device
 
         x = self.token_emb(x)
 
-        pos_emb = self.pos_emb(torch.arange(n, device = device))
+        pos_emb = self.pos_emb(torch.arange(n, device=device))
         x = x + rearrange(pos_emb, 'n d -> 1 n d')
 
-        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim = 1)
+        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b=b)
+        x = torch.cat((cls_tokens, x), dim=1)
 
         if exists(mask):
-            mask = F.pad(mask, (1, 0), value = True)
+            mask = F.pad(mask, (1, 0), value=True)
 
-        out = self.transformer(x, mask = mask)
+        out = self.transformer(x, mask=mask)
         return out
 
+
 class VisionTransformer(nn.Module):
-    def __init__(
-        self,
-        dim,
-        *,
-        image_size,
-        patch_size,
-        channels,
-        **kwargs
-    ):
+    def __init__(self, dim, *, image_size, patch_size, channels, **kwargs):
         super().__init__()
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
-        num_patches = (image_size // patch_size) ** 2
-        patch_dim = channels * patch_size ** 2
+        num_patches = (image_size // patch_size)**2
+        patch_dim = channels * patch_size**2
 
         self.cls_token = nn.Parameter(torch.randn(dim))
 
         self.to_tokens = nn.Sequential(
-            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size),
-            nn.Linear(patch_dim, dim)
-        )
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)',
+                      p1=patch_size,
+                      p2=patch_size), nn.Linear(patch_dim, dim))
 
         self.pos_emb = nn.Embedding(num_patches, dim)
         self.transformer = Transformer(dim, **kwargs)
@@ -194,16 +191,18 @@ class VisionTransformer(nn.Module):
         x = self.to_tokens(x)
         b, n, _ = x.shape
 
-        pos_emb = self.pos_emb(torch.arange(n, device = device))
+        pos_emb = self.pos_emb(torch.arange(n, device=device))
         x = x + rearrange(pos_emb, 'n d -> 1 n d')
 
-        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim = 1)
+        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b=b)
+        x = torch.cat((cls_tokens, x), dim=1)
 
         out = self.transformer(x)
         return out
 
+
 # main clip class
+
 
 class CLIP(nn.Module):
     def __init__(
@@ -241,13 +240,12 @@ class CLIP(nn.Module):
         )
 
         self.visual_transformer = VisionTransformer(
-            dim = dim_image,
-            image_size = visual_image_size,
-            patch_size = visual_patch_size,
-            channels = channels,
-            depth = visual_enc_depth,
-            heads = visual_heads
-        )
+            dim=dim_image,
+            image_size=visual_image_size,
+            patch_size=visual_patch_size,
+            channels=channels,
+            depth=visual_enc_depth,
+            heads=visual_heads)
 
 
         # text latent projection
@@ -320,7 +318,8 @@ class CLIP(nn.Module):
 
         text_latents = self.to_text_latent(text_embeds)
         image_latents = self.to_visual_latent(image_embeds)
-        text_latents, image_latents = map(l2norm, (text_latents, image_latents))
+        text_latents, image_latents = map(l2norm,
+                                          (text_latents, image_latents))
 
         # calculate another set of latents for image to text (vs text to image)
         # proposed by CLOOB
