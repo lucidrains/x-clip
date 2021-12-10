@@ -315,13 +315,13 @@ class CLIP(nn.Module):
 
                 image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
                 masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-                image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bt bi', 'mean')
+                image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
             else:
                 text_to_image = reduce(reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max'), 'bt bi t -> bt bi', 'mean')
-                image_to_text = reduce(reduce(sim_image_to_text, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bt bi', 'mean')
+                image_to_text = reduce(reduce(sim_image_to_text, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
         else:
             text_to_image = einsum('t d, i d -> t i', text_latents, image_latents) * temp
-            image_to_text = text_to_image
+            image_to_text = text_to_image.t()
 
             if self.extra_latent_projection:
                 image_to_text = einsum('t d, i d -> t i', text_latents_extra, image_latents_extra) * temp
