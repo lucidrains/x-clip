@@ -324,7 +324,7 @@ class CLIP(nn.Module):
             image_to_text = text_to_image.t()
 
             if self.extra_latent_projection:
-                image_to_text = einsum('t d, i d -> t i', text_latents_extra, image_latents_extra) * temp
+                image_to_text = einsum('t d, i d -> i t', text_latents_extra, image_latents_extra) * temp
 
         # calculate loss
 
