@@ -17,6 +17,8 @@ setup(
   ],
   install_requires=[
     'einops>=0.3',
+    'ftfy',
+    'regex',
     'torch>=1.6'
   ],
   classifiers=[
