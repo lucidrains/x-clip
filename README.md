@@ -1,5 +1,7 @@
 <img src="./clip.png" width="600px"></img>
 
+<a href="https://discord.gg/xBPBXfcFHd"><img alt="Join us on Discord" src="https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white"></a>
+
 ## x-clip (wip)
 
 A concise but complete implementation of <a href="https://openai.com/blog/clip/">CLIP</a> with various experimental improvements from recent papers
