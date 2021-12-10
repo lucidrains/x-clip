@@ -1,3 +1,5 @@
+import math
+import copy
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
@@ -28,6 +30,10 @@ def l2norm(t):
     return F.normalize(t, dim = -1, p = 2)
 
 # helper classes
+
+class RearrangeImage(nn.Module):
+    def forward(self, x):
+        return rearrange(x, 'b (h w) c -> b c h w', h = int(math.sqrt(x.shape[1])))
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
@@ -209,8 +215,9 @@ class CLIP(nn.Module):
         visual_patch_size = 32,
         channels = 3,
         use_all_token_embeds = False,
+        downsample_image_embeds = False,
         decoupled_contrastive_learning = False,
-        extra_latent_projection = False
+        extra_latent_projection = False,
     ):
         super().__init__()
         self.text_transformer = TextTransformer(
@@ -230,8 +237,26 @@ class CLIP(nn.Module):
             heads = visual_heads
         )
 
+
+        # text latent projection
+
         self.to_text_latent = nn.Linear(dim_text, dim_latent, bias = False)
-        self.to_visual_latent = nn.Linear(dim_image, dim_latent, bias = False)
+
+        # image latent projection
+
+        if downsample_image_embeds:
+            assert use_all_token_embeds, 'must be using all token embeds for contrastive learning in order to downsampling'
+
+            self.to_visual_latent = nn.Sequential(
+                RearrangeImage(),
+                nn.Conv2d(dim_image, dim_image, 4, stride = 2, padding = 1, bias = False, groups = dim_image),
+                nn.Conv2d(dim_image, dim_latent, 1),
+                Rearrange('b c h w -> b (h w) c')
+            )
+        else:
+            self.to_visual_latent = nn.Linear(dim_image, dim_latent, bias = False)
+
+        # temperature
 
         self.temperature = nn.Parameter(torch.tensor(1.))
 
@@ -244,8 +269,8 @@ class CLIP(nn.Module):
         # proposed in https://arxiv.org/abs/2110.11316 (CLOOB)
         self.extra_latent_projection = extra_latent_projection
 
-        self.to_text_latent_extra = nn.Linear(dim_text, dim_latent, bias = False)
-        self.to_visual_latent_extra = nn.Linear(dim_image, dim_latent, bias = False)
+        self.to_text_latent_extra = copy.deepcopy(self.to_text_latent)
+        self.to_visual_latent_extra = copy.deepcopy(self.to_visual_latent)
 
     def forward(
         self,
