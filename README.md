@@ -36,11 +36,22 @@ clip = CLIP(
     extra_latent_projection = True          # whether to use separate projections for text-to-image vs image-to-text comparisons (CLOOB)
 )
 
+# mock data
+
 text = torch.randint(0, 10000, (4, 256))
 images = torch.randn(4, 3, 256, 256)
 mask = torch.ones_like(text).bool()
 
-loss = clip(text, images, text_mask = mask, return_loss = True)
+# train
+
+loss = clip(
+    text,
+    images,
+    text_mask = mask,               # mask for text
+    freeze_image_encoder = False,   # whether to freeze image encoder if using a pretrained image net, proposed by LiT paper
+    return_loss = True              # needs to be set to True to return contrastive loss
+)
+
 loss.backward()
 ```
 
@@ -87,5 +98,16 @@ loss.backward()
     eprint  = {2110.06848},
     archivePrefix = {arXiv},
     primaryClass = {cs.LG}
+}
+```
+
+```bibtex
+@misc{zhai2021lit,
+    title   = {LiT: Zero-Shot Transfer with Locked-image Text Tuning},
+    author  = {Xiaohua Zhai and Xiao Wang and Basil Mustafa and Andreas Steiner and Daniel Keysers and Alexander Kolesnikov and Lucas Beyer},
+    year    = {2021},
+    eprint  = {2111.07991},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
 }
 ```

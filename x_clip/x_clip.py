@@ -1,5 +1,7 @@
 import math
 import copy
+from contextlib import contextmanager
+
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
@@ -13,6 +15,10 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+@contextmanager
+def null_context():
+    yield
 
 def max_neg_value(dtype):
     return -torch.finfo(dtype).max
@@ -278,12 +284,22 @@ class CLIP(nn.Module):
         image,
         text_mask = None,
         return_loss = False,
-        text_to_image = True   # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
+        freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
+        text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
 
         enc_text = self.text_transformer(text, mask = text_mask)
-        enc_image = self.visual_transformer(image)
+
+        # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
+
+        image_encoding_context = null_context if not freeze_image_encoder else torch.no_grad
+
+        with image_encoding_context():
+            enc_image = self.visual_transformer(image)
+
+            if freeze_image_encoder:
+                enc_image.detach_()
 
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
