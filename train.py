@@ -8,6 +8,7 @@ from torch.cuda.amp import autocast
 
 import wandb
 import x_clip
+from x_clip import tokenizer as simple_tokenizer
 
 
 def debug(message: str, quiet: bool = False, *args, **kwargs):
@@ -63,8 +64,6 @@ def clip_model_from_args(args, num_text_tokens):
 
 
 def check_args(args):
-    if not os.path.exists(args.bpe_path):
-        raise ValueError('BPE path does not exist')
     if not os.path.exists(args.datadir):
         raise ValueError('Dataset path does not exist')
     if os.path.exists(args.ckpt_save_path) and not args.overwrite:
@@ -83,9 +82,12 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    yttm_tokenizer = x_clip.YttmTokenizer(args.bpe_path)
+    if args.bpe_path is not None:
+        _tokenizer = x_clip.YttmTokenizer(args.bpe_path)
+    else:
+        _tokenizer = simple_tokenizer
 
-    clip_model = clip_model_from_args(args, yttm_tokenizer.vocab_size)
+    clip_model = clip_model_from_args(args, _tokenizer.vocab_size)
     clip_model.to(device)
     clip_model.train()
 
@@ -98,7 +100,7 @@ def main():
 
     image_text_dataset = x_clip.ImageTextDataset(preprocess=preprocess_fn,
                                           folder=args.datadir,
-                                          bpe_tokenizer=yttm_tokenizer)
+                                          bpe_tokenizer=_tokenizer)
     image_text_dataloader = torch.utils.data.DataLoader(
         image_text_dataset,
         batch_size=args.batch_size,
