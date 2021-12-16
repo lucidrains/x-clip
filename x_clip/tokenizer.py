@@ -5,6 +5,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 import regex as re
+import ftfy
 
 # yttm tokenizer
 import torch
