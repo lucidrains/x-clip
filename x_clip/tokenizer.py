@@ -34,6 +34,18 @@ class YttmTokenizer:
         if isinstance(texts, str): texts = [texts]
         all_tokens = self.encode(texts)
         result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+        for i, tokens in enumerate(all_tokens):
+            if len(tokens) > context_length:
+                if truncate_text:
+                    tokens = tokens[:context_length]
+                else:
+                    raise RuntimeError(
+                        f"Input {texts[i]} is too long for context length {context_length}"
+                    )
+            result[i, :len(tokens)] = tokens.clone().detach()
+
+        return result
+
 # take from https://github.com/openai/CLIP/blob/main/clip/simple_tokenizer.py
 # to give users a quick easy start to training DALL-E without doing BPE
 
