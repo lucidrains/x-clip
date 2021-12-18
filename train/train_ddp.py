@@ -71,12 +71,8 @@ def get_args():
                         help="text_enc_depth (default: 6)")
     parser.add_argument("--text-seq-len", type=int, default=256,
                         help="text_seq_len (default: 256)")
-    parser.add_argument("--text-heads-len", type=int, default=8,
+    parser.add_argument("--text-heads", type=int, default=8,
                         help="text_heads (default: 8)")
-    parser.add_argument("--num-visual-tokens", type=int, default=512,
-                        help="num_visual_tokens (default: 512)")
-    parser.add_argument("--visual-enc-depth", type=int, default=6,
-                        help="visual_enc_depth (default: 6)")
     parser.add_argument("--visual-enc-depth", type=int, default=6,
                         help="visual_enc_depth (default: 6)")
     parser.add_argument("--visual-heads", type=int, default=8,
@@ -123,26 +119,26 @@ def create_logger(path_log, file_name):
     file_path = os.path.join(path_log, file_name)
 
     # file handler for logging to file
-    file_handler = logging.filehandler(file_path)
-    file_handler.setlevel(logging.debug)
+    file_handler = logging.FileHandler(file_path)
+    file_handler.setLevel(logging.DEBUG)
 
     # console handler for logging to the console
-    console_handler = logging.streamhandler()
-    console_handler.setlevel(logging.info)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
 
-    logger = logging.getlogger("logger")
-    logger.setlevel(logging.debug)
+    logger = logging.getLogger("logger")
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
-    if file_path is not none:
-        logger.addhandler(file_handler)
-    logger.addhandler(console_handler)
+    if file_path is not None:
+        logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
     return logger
 
 
 def setup(rank, world_size):
-    os.environ['master_addr'] = "localhost"
-    os.environ['master_port'] = "12345"
+    os.environ['MASTER_ADDR'] = "localhost"
+    os.environ['MASTER_PORT'] = "12345"
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     # TO DO: Check nccl backend with newest PyTorch version (because of the all gather bug in a older version).
 
@@ -177,7 +173,7 @@ def reduce_tensor(tensor, n):
     return rt
 
 
-def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epochs, logger=None, writer=None):
+def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
 
     # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
@@ -191,7 +187,7 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
     logger.info(f"{datetime.now()} rank: {args.rank} ddp setup")
     model.to(args.rank)
     logger.info(f"{datetime.now()} rank: {args.rank} model moved to rank {args.rank}")
-    ddp_model = DDP(model, device_ids=[args.rank])
+    ddp_model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
     logger.info(f"{datetime.now()} rank: {args.rank} created ddp model")
 
     def one_epoch(args, model, optimizer, dl_train, dl_valid, epoch, step):
@@ -204,7 +200,7 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
 
         model.train()
 
-        if args.tb_profile:
+        if args.tb_profiler:
             prof = torch.profiler.profile(
                     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
                     on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_path),
@@ -217,9 +213,8 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
         tp = time.time()
         for i, b in enumerate(dl_train):
 
-            if args.dryrun:
-                if i == args.dryrun:
-                    break
+            if args.dryrun and (i == args.dryrun):
+                break
 
             #optimizer.zero_grad()
             # Faster option:
@@ -231,7 +226,10 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
             dt = reduce_tensor(dt, args.world_size)
             data_time.update(dt)
 
-            text, text_mask, image = b
+            # TO DO: Adapt to text_mask from dataloader
+            #text, text_mask, image = b
+            image, text = b
+            text_mask = torch.zeros_like(text, device = args.rank, dtype = bool)
 
             text      = text.to(args.rank)
             text_mask = text_mask.to(args.rank)
@@ -257,18 +255,18 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
 
             model.module.temperature.data.clamp_(-torch.log(torch.tensor(100.)), torch.log(torch.tensor(100.)))
 
-            labels = torch.arange(args.rank*args.bs, (args.rank+1)*args.bs).to(args.rank)
-            acc_text  = ((sim_text.argmax(1) == labels).float()).mean()
-            acc_image = ((sim_image.argmax(1) == labels).float()).mean()
-            acc       = (acc_text + acc_image) / 2
+            #labels = torch.arange(args.rank*args.bs, (args.rank+1)*args.bs).to(args.rank)
+            #acc_text  = ((sim_text.argmax(1) == labels).float()).mean()
+            #acc_image = ((sim_image.argmax(1) == labels).float()).mean()
+            #acc       = (acc_text + acc_image) / 2
 
             reduced_loss = reduce_tensor(loss.data, args.world_size)
             losses.update(reduced_loss.item())
 
-            reduced_acc = reduce_tensor(acc.data, args.world_size)
-            accuracies.update(reduced_acc.item())
+            #reduced_acc = reduce_tensor(acc.data, args.world_size)
+            #accuracies.update(reduced_acc.item())
 
-            if args.tb_profile:
+            if args.tb_profiler:
                 prof.step()
 
             bt = time.time() - tp
@@ -278,23 +276,23 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
 
             if args.rank == 0:
                 writer.add_scalars("1 loss/1 step", {"train": reduced_loss.item()}, step)
-                writer.add_scalars("2 accuracy/1 step", {"train": reduced_acc.item()}, step)
+                #writer.add_scalars("2 accuracy/1 step", {"train": reduced_acc.item()}, step)
                 writer.add_scalars("3 temperature/1 step", {"train": model.module.temperature.data.item()}, step)
                 writer.add_scalars("4 timings/1 step", {"dt": dt, "bt": bt}, step)
                 if (step % args.save_interval_step == 0) and (step != 0):
                     path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_step{step:08d}.pt")
                     torch.save(ddp_model.module.state_dict(), path_save)
-                    logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
+                    #logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
+                    logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f}")
 
-            if (step % args.save_interval_step == 0) and (step != 0):
-                validate(args, model, dl_valid_id,  logger, writer, step, epoch, step_epoch="step", logid="valid-id")
-                validate(args, model, dl_valid_ood, logger, writer, step, epoch, step_epoch="step", logid="valid-ood")
+            #if (step % args.save_interval_step == 0) and (step != 0):
+                # TO DO: Add validation loop.
 
             step += 1
 
             tp = time.time()
 
-        if args.tb_profile:
+        if args.tb_profiler:
             prof.stop()   
 
         time_epoch_end = time.time()
@@ -304,17 +302,17 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid_id, dl_valid_ood, epoch
 
         if args.rank == 0:
             writer.add_scalars("1 loss/2 epoch", {"train": losses.avg}, epoch)
-            writer.add_scalars("2 accuracy/2 epoch", {"train": accuracies.avg}, epoch)
+            #writer.add_scalars("2 accuracy/2 epoch", {"train": accuracies.avg}, epoch)
             writer.add_scalars("4 timings/2 step", {"dt": data_time.avg, "bt": batch_time.avg}, epoch)
             writer.add_scalars("4 timings/3 epoch", {"et": epoch_time}, epoch)
             if epoch % args.save_interval_epoch == 0:
                 path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_epoch{epoch:03d}.pt")
                 torch.save(ddp_model.module.state_dict(), path_save)
-                logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
+                #logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
+                logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f}")
 
-        if epoch % args.save_interval_epoch == 0:
-            validate(args, model, dl_valid_id,  logger, writer, step, epoch, step_epoch="epoch", logid="valid-id")
-            validate(args, model, dl_valid_ood, logger, writer, step, epoch, step_epoch="epoch", logid="valid-ood")
+        #if epoch % args.save_interval_epoch == 0:
+            # TO DO: Add validation loop.
 
         return model, optimizer, step
 
@@ -360,7 +358,7 @@ def trainer(rank, world_size):
     if args.rank == 0:
         # print and log args
         for k in args.__dict__.keys():
-            logger.info(f"{k:>20}: {args.__dict__[k]}")
+            logger.info(f"{k:>30}: {args.__dict__[k]}")
 
     # data setup
     # TO DO: Add tokenizer and samplers!
@@ -368,7 +366,10 @@ def trainer(rank, world_size):
 
     logger.info(f"{datetime.now()} rank: {args.rank} data setup")
 
-    ds_train = # TO DO: Add!
+    ds_train = torch.utils.data.TensorDataset(
+            torch.randn(args.bs*8, args.channels, args.visual_image_size, args.visual_image_size, dtype=torch.float),
+            torch.randint(0, args.num_text_tokens, (args.bs*8, args.text_seq_len), dtype=torch.long),
+            ) # TO DO: Add real dataset.
     logger.info(f"{datetime.now()} rank: {args.rank} created train dataset")
 
     dl_train = DataLoader(ds_train,
@@ -379,7 +380,10 @@ def trainer(rank, world_size):
                           drop_last = True)
     logger.info(f"{datetime.now()} rank: {args.rank} created train dataloader with length {len(dl_train)}")
 
-    ds_valid = # TO DO: Add!
+    ds_valid = torch.utils.data.TensorDataset(
+            torch.randn(args.bs*5, args.channels, args.visual_image_size, args.visual_image_size),
+            torch.randn(args.bs*5, args.text_seq_len, args.dim_text)
+            ) # TO DO: Add real dataset.
     logger.info(f"{datetime.now()} rank: {args.rank} created valid dataset")
 
     dl_valid = DataLoader(ds_valid,
