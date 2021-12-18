@@ -1,10 +1,12 @@
 import math
 import copy
 from contextlib import contextmanager
+from functools import partial
 
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
+import torch.distributed as dist
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 
@@ -224,8 +226,12 @@ class CLIP(nn.Module):
         downsample_image_embeds = False,
         decoupled_contrastive_learning = False,
         extra_latent_projection = False,
+        loss_over_ranks = False,
     ):
         super().__init__()
+
+        self.loss_over_ranks = loss_over_ranks 
+
         self.text_transformer = TextTransformer(
             dim = dim_text,
             num_tokens = num_text_tokens,
@@ -341,31 +347,61 @@ class CLIP(nn.Module):
 
         # contrastive loss
 
+        if self.loss_over_ranks:
+            all_text_latents  = [torch.zeros_like(text_latents)  for _ in range(dist.get_world_size())]
+            all_image_latents = [torch.zeros_like(image_latents) for _ in range(dist.get_world_size())]
+
+            dist.all_gather(all_text_latents, text_latents)
+            dist.all_gather(all_image_latents, image_latents)
+
+            all_text_latents  = torch.cat(all_text_latents, dim=0)
+            all_image_latents = torch.cat(all_image_latents, dim=0)
+            # TO DO: Check all gather order to verification, as there was once a bug in it!
+
         if self.use_all_token_embeds:
             # fine-grained CLIP logic
-            sim_text_to_image = einsum('x t d, y i d -> x y t i', text_latents, image_latents) * temp
+            if self.loss_over_ranks:
+                sim_text_to_image = einsum('bt t d, bi i d -> bt bi t i', text_latents, all_image_latents) * temp
+                sim_image_to_text = einsum('bi i d, bt t d -> bi bt i t', image_latents, all_text_latents) * temp
+            else:
+                sim_text_to_image = einsum('bt t d, bi i d -> bt bi t i', text_latents, image_latents) * temp
+                sim_image_to_text = sim_text_to_image # TO DO: With .permute(1,0,3,2) we could skip the next two else below,
+                # this would save some lines of code but is maybe slower?
 
-            sim_image_to_text = sim_text_to_image
+            # TO DO: extra_latent_projection is not adapted with loss_over_ranks, needs to be fixed!
             if self.extra_latent_projection:
-                sim_image_to_text = einsum('x t d, y i d -> x y t i', text_latents_extra, image_latents_extra) * temp
+                sim_image_to_text = einsum('bt t d, bi i d -> bt bi t i', text_latents_extra, image_latents_extra) * temp
 
             if exists(text_mask):
                 text_to_image = reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max')
                 text_to_image_mask = rearrange(text_mask, 'bt t -> bt 1 t')
                 text_to_image = masked_mean(text_to_image, text_to_image_mask, dim = -1)
 
-                image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
-                masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-                image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
+                if self.loss_over_ranks:
+                    image_to_text_mask = rearrange(text_mask, 'bt t -> 1 bt 1 t')
+                    masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
+                    image_to_text = reduce(reduce(masked_sim, 'bi bt i t -> bi bt i', 'max'), 'bi bt i -> bi bt', 'mean')
+                else: # This else part can be removed, see comment above.
+                    image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
+                    masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
+                    image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
             else:
                 text_to_image = reduce(reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max'), 'bt bi t -> bt bi', 'mean')
-                image_to_text = reduce(reduce(sim_image_to_text, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
+                if self.loss_over_ranks:
+                    image_to_text = reduce(reduce(sim_image_to_text, 'bi bt i t -> bi bt i', 'max'), 'bi bt i -> bi bt', 'mean')
+                else: # This else part can be removed, see comment above.
+                    image_to_text = reduce(reduce(sim_image_to_text, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
         else:
-            text_to_image = einsum('t d, i d -> t i', text_latents, image_latents) * temp
-            image_to_text = text_to_image.t()
+            if self.loss_over_ranks:
+                text_to_image = einsum('bt d, bi d -> bt bi', text_latents, all_image_latents) * temp
+                image_to_text = einsum('bi d, bt d -> bi bt', image_latents, all_text_latents) * temp
+            else:
+                text_to_image = einsum('bt d, bi d -> bt bi', text_latents, image_latents) * temp
+                image_to_text = text_to_image.t()
 
+            # TO DO: extra_latent_projection does not work with loss_over_ranks, needs to be fixed!
             if self.extra_latent_projection:
-                image_to_text = einsum('t d, i d -> i t', text_latents_extra, image_latents_extra) * temp
+                image_to_text = einsum('bt d, bi d -> bi bt', text_latents_extra, image_latents_extra) * temp
 
         # calculate loss
 
@@ -374,13 +410,23 @@ class CLIP(nn.Module):
         text_to_image_exp, image_to_text_exp = map(torch.exp, (text_to_image, image_to_text))
 
         # numerators
+        if self.loss_over_ranks:
+            rank = dist.get_rank()
+            pos_diag = rank * b # the positive diagonal for the rank is at position rank * b
+        else:
+            pos_diag = 0
 
-        text_to_image_pos, image_to_text_pos = map(torch.diag, (text_to_image_exp, image_to_text_exp))
+        text_to_image_pos, image_to_text_pos = map(partial(torch.diag, diagonal=pos_diag), (text_to_image_exp, image_to_text_exp))
 
         # denominator
 
         if self.decoupled_contrastive_learning:
-            pos_mask = torch.eye(b, device = device, dtype = torch.bool)
+            if self.loss_over_ranks:
+                pos_mask = torch.zeros_like(text_to_image_exp, device = device, dtype = torch.bool)
+                pos_mask[torch.arange(b), torch.arange(b*rank, b*(rank+1)] = True
+            else:
+                pos_mask = torch.eye(b, device = device, dtype = torch.bool)
+
             text_to_image_exp, image_to_text_exp = map(lambda t: t.masked_fill(pos_mask, 0.), (text_to_image_exp, image_to_text_exp))
 
         text_to_image_denom, image_to_text_denom = map(lambda t: t.sum(dim = -1), (text_to_image_exp, image_to_text_exp))
