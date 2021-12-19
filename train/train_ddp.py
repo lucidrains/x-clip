@@ -20,7 +20,9 @@ from torch.nn.utils import clip_grad_norm_
 import torch.profiler
 
 from x_clip import CLIP
-from x_clip import tokenizer as simple_tokenizer
+from x_clip.tokenizer import tokenizer
+
+from dataset import get_wds_dataset
 
 
 # multi-GPU training script based on https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
@@ -33,24 +35,25 @@ def get_args():
     """Get all parsed arguments."""
     parser = argparse.ArgumentParser(description="X-CLIP ddp training")
 
-    # data
+    # general setup
     parser.add_argument("--id", type=str,
                         help="run id")
-
-    # TO DO: Add input data options here!
-
     parser.add_argument("--path-results", type=str, default="results",
                         help="path to the results data, i.e., logs, model weights, etc. (default: results)")
+
+    # training
+    parser.add_argument("--path-data-train", type=str, default=None,
+                        help="path to the training data (default: None)")
+    parser.add_argument("--path-data-valid", type=str, default=None,
+                        help="path to the validation data (default: None)")
     parser.add_argument("--path-weights", type=str, default=None,
                         help="path to weights for reloading (default: None)")
     parser.add_argument("--numw", type=int, default=0,
                         help="number of workers for pytorch dataloader (default: 0)")
-
-    # training
-    parser.add_argument("--lr", type=int, default=1e-4,
+    parser.add_argument("--lr", type=float, default=1e-4,
                         help="learning rate (default: 1e-4)")
-    parser.add_argument("--bs", type=int, default=8,
-                        help="batch size (default: 8)")
+    parser.add_argument("--bs", type=int, default=128,
+                        help="batch size (default: 128)")
     parser.add_argument("--epochs", type=int, default=2,
                         help="epochs (default: 2)")
     parser.add_argument("--dryrun", type=int, default=None,
@@ -63,8 +66,6 @@ def get_args():
                         help="image encoder dim_image (default: 512)")
     parser.add_argument("--dim-latent", type=int, default=512,
                         help="dim_latent (default: 512)")
-    parser.add_argument("--num-text-tokens", type=int, default=512,
-                        help="num_text_tokens (default: 512)")
     parser.add_argument("--num-visual-tokens", type=int, default=512,
                         help="num_visual_tokens (default: 512)")
     parser.add_argument("--text-enc-depth", type=int, default=6,
@@ -97,6 +98,8 @@ def get_args():
                         help="freeze_image_encoder: False)")
     parser.add_argument("--text-to-image", action="store_true", default=True,
                         help="text_to_image default: True)")
+    parser.add_argument("--loss-over-ranks", action="store_true", default=False,
+                        help="loss_over_ranks default: False)")
     parser.add_argument("--clip-grad-norm", type=float, default=None,
                         help="clip_grad_norm (default: None)")
 
@@ -203,7 +206,7 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
         if args.tb_profiler:
             prof = torch.profiler.profile(
                     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler(args.tensorboard_path),
+                    on_trace_ready=torch.profiler.tensorboard_trace_handler(args.path_tb),
                     record_shapes=True,
                     profile_memory=True,
                     with_stack=True
@@ -216,10 +219,10 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
             if args.dryrun and (i == args.dryrun):
                 break
 
-            #optimizer.zero_grad()
+            optimizer.zero_grad()
             # Faster option:
-            for param in model.parameters():
-                param.grad = None
+            #for param in model.parameters():
+            #    param.grad = None
 
             dt = time.time() - tp
             dt = torch.tensor(dt).to(args.rank)
@@ -229,10 +232,11 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
             # TO DO: Adapt to text_mask from dataloader
             #text, text_mask, image = b
             image, text = b
-            text_mask = torch.zeros_like(text, device = args.rank, dtype = bool)
 
-            text      = text.to(args.rank)
-            text_mask = text_mask.to(args.rank)
+            text      = text.squeeze(1).to(args.rank)
+            #text_mask = text_mask.to(args.rank) # TO DO: Add masking to dataset
+            #text_mask = torch.ones_like(text, device = args.rank, dtype = bool)
+            text_mask = None
             image     = image.to(args.rank)
 
             loss = model(
@@ -250,6 +254,15 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
 
             if args.clip_grad_norm:
                 clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+
+            # TO DO: Check if it is fine if we only log from rank 0 as grads should be already synced?
+            if args.rank == 0:
+                total_norm = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = torch.linalg.norm(p.grad.data)
+                        total_norm += param_norm.item()
+                writer.add_scalars("3 grad/1 gradient L2 norm", {"data train": total_norm}, step)
 
             optimizer.step()
 
@@ -277,8 +290,8 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
             if args.rank == 0:
                 writer.add_scalars("1 loss/1 step", {"train": reduced_loss.item()}, step)
                 #writer.add_scalars("2 accuracy/1 step", {"train": reduced_acc.item()}, step)
-                writer.add_scalars("3 temperature/1 step", {"train": model.module.temperature.data.item()}, step)
-                writer.add_scalars("4 timings/1 step", {"dt": dt, "bt": bt}, step)
+                writer.add_scalars("4 temperature/1 step", {"train": model.module.temperature.data.item()}, step)
+                writer.add_scalars("5 timings/1 step", {"dt": dt, "bt": bt}, step)
                 if (step % args.save_interval_step == 0) and (step != 0):
                     path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_step{step:08d}.pt")
                     torch.save(ddp_model.module.state_dict(), path_save)
@@ -318,6 +331,8 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
 
     logger.info(f"{datetime.now()} rank: {args.rank} start training")
     for epoch in range(args.epochs):
+        # TO DO: Check this setup for the webdataset setup.
+        os.environ["WDS_EPOCH"] = str(epoch)
         ddp_model, optimizer, step = one_epoch(args, ddp_model, optimizer, dl_train, dl_valid, epoch, step)
 
     cleanup()
@@ -337,6 +352,7 @@ def trainer(rank, world_size):
     args = get_args()
     args.rank = rank
     args.world_size = world_size
+    args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
     args.path_log = os.path.join(args.path_results, args.id)
@@ -361,24 +377,22 @@ def trainer(rank, world_size):
             logger.info(f"{k:>30}: {args.__dict__[k]}")
 
     # data setup
-    # TO DO: Add tokenizer and samplers!
-    logger.info(f"{datetime.now()} rank: {args.rank} created samplers and tokenizers")
-
     logger.info(f"{datetime.now()} rank: {args.rank} data setup")
 
-    ds_train = torch.utils.data.TensorDataset(
-            torch.randn(args.bs*8, args.channels, args.visual_image_size, args.visual_image_size, dtype=torch.float),
-            torch.randint(0, args.num_text_tokens, (args.bs*8, args.text_seq_len), dtype=torch.long),
-            ) # TO DO: Add real dataset.
-    logger.info(f"{datetime.now()} rank: {args.rank} created train dataset")
-
-    dl_train = DataLoader(ds_train,
-                          batch_size = args.bs,
-                          shuffle = True if not(args.dryrun) else False,
-                          num_workers = args.numw,
-                          pin_memory = True,
-                          drop_last = True)
-    logger.info(f"{datetime.now()} rank: {args.rank} created train dataloader with length {len(dl_train)}")
+#    ds_train = torch.utils.data.TensorDataset(
+#            torch.randn(args.bs*8, args.channels, args.visual_image_size, args.visual_image_size, dtype=torch.float),
+#            torch.randint(0, args.num_text_tokens, (args.bs*8, args.text_seq_len), dtype=torch.long),
+#            ) # TO DO: Add real dataset.
+#    logger.info(f"{datetime.now()} rank: {args.rank} created train dataset")
+#
+#    dl_train = DataLoader(ds_train,
+#                          batch_size = args.bs,
+#                          shuffle = True if not(args.dryrun) else False,
+#                          num_workers = args.numw,
+#                          pin_memory = True,
+#                          drop_last = True)
+    dl_train = get_wds_dataset(args, is_train = True, logger=logger)
+    #logger.info(f"{datetime.now()} rank: {args.rank} created train dataloader with length {len(dl_train)}")
 
     ds_valid = torch.utils.data.TensorDataset(
             torch.randn(args.bs*5, args.channels, args.visual_image_size, args.visual_image_size),
@@ -416,6 +430,7 @@ def trainer(rank, world_size):
             downsample_image_embeds = args.downsample_image_embeds,
             decoupled_contrastive_learning = args.decoupled_contrastive_learning,
             extra_latent_projection = args.extra_latent_projection,
+            loss_over_ranks = args.loss_over_ranks,
     )
 
     if args.path_weights:

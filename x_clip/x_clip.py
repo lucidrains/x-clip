@@ -373,18 +373,18 @@ class CLIP(nn.Module):
                 sim_image_to_text = einsum('x t d, y i d -> x y t i', text_latents_extra, image_latents_extra) * temp
 
             if exists(text_mask):
-                text_to_image = reduce(sim_text_to_image, 'x y t i -> x y t', 'max')
-                text_to_image_mask = rearrange(text_mask, 'x t -> x 1 t')
+                text_to_image = reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max')
+                text_to_image_mask = rearrange(text_mask, 'bt t -> bt 1 t')
                 text_to_image = masked_mean(text_to_image, text_to_image_mask, dim = -1)
 
                 if self.loss_over_ranks:
-                    image_to_text_mask = rearrange(text_mask, 'x t -> 1 x 1 t')
+                    image_to_text_mask = rearrange(text_mask, 'bt t -> 1 bt 1 t')
                     masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-                    image_to_text = reduce(reduce(masked_sim, 'y x i t -> y x i', 'max'), 'y x i -> y x', 'mean')
+                    image_to_text = reduce(reduce(masked_sim, 'bi bt i t -> bi bt i', 'max'), 'bi bt i -> bi bt', 'mean')
                 else: # This else part can be removed, see comment above.
-                    image_to_text_mask = rearrange(text_mask, 'x t -> x 1 t 1')
+                    image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
                     masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-                    image_to_text = reduce(reduce(masked_sim, 'x y t i -> x y i', 'max'), 'x y i -> y x', 'mean')
+                    image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
             else:
                 text_to_image = reduce(reduce(sim_text_to_image, 'x y t i -> x y t', 'max'), 'x y t -> x y', 'mean')
                 if self.loss_over_ranks:
