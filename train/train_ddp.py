@@ -215,6 +215,10 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
 
         tp = time.time()
         for i, b in enumerate(dl_train):
+            dt = time.time() - tp
+            dt = torch.tensor(dt).to(args.rank)
+            dt = reduce_tensor(dt, args.world_size)
+            data_time.update(dt)
 
             if args.dryrun and (i == args.dryrun):
                 break
@@ -223,11 +227,6 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
             # Faster option:
             #for param in model.parameters():
             #    param.grad = None
-
-            dt = time.time() - tp
-            dt = torch.tensor(dt).to(args.rank)
-            dt = reduce_tensor(dt, args.world_size)
-            data_time.update(dt)
 
             # TO DO: Adapt to text_mask from dataloader
             #text, text_mask, image = b
