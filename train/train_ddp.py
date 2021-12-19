@@ -58,6 +58,8 @@ def get_args():
                         help="epochs (default: 2)")
     parser.add_argument("--dryrun", type=int, default=None,
                         help="Run dryrun steps per epoch to test the setup (default: None)")
+    parser.add_argument("--checkdataloading", action="store_true", default=False,
+                        help="Check only data loading and skip all model related logging (default: False)")
 
     # X-CLIP model
     parser.add_argument("--dim-text", type=int, default=512,
@@ -222,6 +224,13 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
 
             if args.dryrun and (i == args.dryrun):
                 break
+
+            if args.checkdataloading:
+                if args.rank == 0:
+                    writer.add_scalars("5 timings/1 step", {"dt": dt}, step)
+                step += 1
+                tp = time.time()
+                continue
 
             optimizer.zero_grad()
             # Faster option:
