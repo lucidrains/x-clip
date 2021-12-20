@@ -228,6 +228,7 @@ class CLIP(nn.Module):
         loss_over_ranks = False,
     ):
         super().__init__()
+<<<<<<< HEAD
 
         self.loss_over_ranks = loss_over_ranks 
 
@@ -238,6 +239,13 @@ class CLIP(nn.Module):
             depth = text_enc_depth,
             heads = text_heads
         )
+=======
+        self.text_transformer = TextTransformer(dim=dim_text,
+                                                num_tokens=num_text_tokens,
+                                                max_seq_len=text_seq_len,
+                                                depth=text_enc_depth,
+                                                heads=text_heads)
+>>>>>>> 7a6b8e4b42ba9323a7c7ca6bfb0c968abeaf1fd1
 
         self.visual_transformer = VisionTransformer(
             dim=dim_image,
