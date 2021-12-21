@@ -401,8 +401,8 @@ class CLIP(nn.Module):
                 image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
 
                 # use all latents
-                #text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
-                #image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
+                #text_to_image = einsum('x d, y d -> x y', all_text_latents, all_image_latents) * temp
+                #image_to_text = einsum('y d, x d -> y x', all_image_latents, all_text_latents) * temp
                 # TO DO: Can be setup for all latents like in the also to only calculate similarites once.
             else:
                 text_to_image = einsum('x d, y d -> x y', text_latents, image_latents) * temp
