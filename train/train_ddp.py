@@ -56,6 +56,8 @@ def get_args():
                         help="batch size (default: 128)")
     parser.add_argument("--epochs", type=int, default=2,
                         help="epochs (default: 2)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed (default: None)")
     parser.add_argument("--dryrun", type=int, default=None,
                         help="Run dryrun steps per epoch to test the setup (default: None)")
     parser.add_argument("--checkdataloading", action="store_true", default=False,
@@ -194,6 +196,9 @@ def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, w
     logger.info(f"{datetime.now()} rank: {args.rank} model moved to rank {args.rank}")
     ddp_model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
     logger.info(f"{datetime.now()} rank: {args.rank} created ddp model")
+
+    # TO DO: Remove after debugging
+    #ddp_model.register_comm_hook(None, allreduce_sum_hook)
 
     def one_epoch(args, model, optimizer, dl_train, dl_valid, epoch, step):
         time_epoch_start = time.time()
@@ -370,6 +375,12 @@ def trainer(rank, world_size):
     os.makedirs(args.path_tb, exist_ok=True)
     os.makedirs(args.path_model, exist_ok=True)
 
+    # seed
+    if args.seed:
+        # Based on: https://pytorch-lightning.readthedocs.io/en/stable/_modules/pytorch_lightning/utilities/seed.html#seed_everything
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
     # setup loggers
     # TO DO: Revisit file name when processes are more than 1 min apart.
     # (We want to log the setup from every rank to be able to debug all ranks.)
@@ -469,7 +480,45 @@ def trainer(rank, world_size):
 if __name__ == "__main__":
     n_gpus = torch.cuda.device_count()
     print(f"#gpus: {n_gpus}")
-    if n_gpus < 2:
-        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
-    else:
-        run(trainer, n_gpus)
+#    if n_gpus < 2:
+#        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
+#    else:
+    run(trainer, n_gpus)
+
+
+# TO DO: Remove after debugging.
+# Sum allgather based on:
+# https://pytorch.org/docs/stable/ddp_comm_hooks.html
+# https://pytorch.org/docs/stable/_modules/torch/distributed/algorithms/ddp_comm_hooks/default_hooks.html#allreduce_hook
+def _allreduce_sum_fut(
+    process_group: dist.ProcessGroup, tensor: torch.Tensor
+) -> torch.futures.Future[torch.Tensor]:
+    "Averages the input gradient tensor by allreduce and returns a future."
+    group_to_use = process_group if process_group is not None else dist.group.WORLD
+
+    # Apply the division first to avoid overflow, especially for FP16.
+    #tensor.div_(group_to_use.size()) # disabled to get sum
+
+    return (
+        dist.all_reduce(tensor, group=group_to_use, async_op=True)
+        .get_future()
+        .then(lambda fut: fut.value()[0])
+    )
+
+
+def allreduce_sum_hook(
+    process_group: dist.ProcessGroup, bucket: dist.GradBucket
+) -> torch.futures.Future[torch.Tensor]:
+    """
+    This DDP communication hook just calls ``allreduce`` using ``GradBucket``
+    tensors. Once gradient tensors are aggregated across all workers, its ``then``
+    callback takes the mean and returns the result. If user registers this hook,
+    DDP results is expected to be same as the case where no hook was registered.
+    Hence, this won't change behavior of DDP and user can use this as a reference
+    or modify this hook to log useful information or any other purposes while
+    unaffecting DDP behavior.
+
+    Example::
+        >>> ddp_model.register_comm_hook(process_group, allreduce_sum_hook)
+    """
+    return _allreduce_sum_fut(process_group, bucket.buffer())

@@ -363,6 +363,10 @@ class CLIP(nn.Module):
             if self.loss_over_ranks:
                 sim_text_to_image = einsum('x t d, y i d -> x y t i', text_latents, all_image_latents) * temp
                 sim_image_to_text = einsum('y i d, x t d -> y x i t', image_latents, all_text_latents) * temp
+
+                # use all latents
+                #sim_text_to_image = einsum('x t d, y i d -> x y t i', all_text_latents, all_image_latents) * temp
+                #sim_image_to_text = einsum('y i d, x t d -> y x i t', all_image_latents, all_text_latents) * temp
             else:
                 sim_text_to_image = einsum('x t d, y i d -> x y t i', text_latents, image_latents) * temp
                 sim_image_to_text = sim_text_to_image # TO DO: With .permute(1,0,3,2) we could skip the next two else below,
@@ -395,6 +399,10 @@ class CLIP(nn.Module):
             if self.loss_over_ranks:
                 text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
                 image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
+
+                # use all latents
+                #text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
+                #image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
             else:
                 text_to_image = einsum('x d, y d -> x y', text_latents, image_latents) * temp
                 image_to_text = text_to_image.t()
@@ -433,8 +441,10 @@ class CLIP(nn.Module):
 
         # loss
 
-        text_to_image_loss = -log(text_to_image_pos / text_to_image_denom).mean()
-        image_to_text_loss = -log(image_to_text_pos / image_to_text_denom).mean()
+        # TO DO: Change the calculation to log space, like in:
+        # https://github.com/HobbitLong/SupContrast/blob/master/losses.py#L89
+        text_to_image_loss = -torch.log(text_to_image_pos / text_to_image_denom).mean()
+        image_to_text_loss = -torch.log(image_to_text_pos / image_to_text_denom).mean()
 
         loss = (text_to_image_loss + image_to_text_loss) / 2
         return loss
