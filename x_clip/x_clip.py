@@ -403,6 +403,7 @@ class CLIP(nn.Module):
                 # use all latents
                 #text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
                 #image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
+                # TO DO: Can be setup for all latents like in the also to only calculate similarites once.
             else:
                 text_to_image = einsum('x d, y d -> x y', text_latents, image_latents) * temp
                 image_to_text = text_to_image.t()
@@ -421,6 +422,9 @@ class CLIP(nn.Module):
         if self.loss_over_ranks:
             rank = dist.get_rank()
             pos_diag = rank * b # the positive diagonal for the rank is at position rank * b
+
+            # use all latents
+            #pos_diag = 0
         else:
             pos_diag = 0
 
@@ -432,6 +436,9 @@ class CLIP(nn.Module):
             if self.loss_over_ranks:
                 pos_mask = torch.zeros_like(text_to_image_exp, device = device, dtype = torch.bool)
                 pos_mask[torch.arange(b), torch.arange(b*rank, b*(rank+1))] = True
+
+                # use all latents
+                # TO DO: Needs to be setup for all latents.
             else:
                 pos_mask = torch.eye(b, device = device, dtype = torch.bool)
 
