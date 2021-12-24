@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'x-clip',
   packages = find_packages(exclude=[]),
-  version = '0.0.6',
+  version = '0.0.7',
   license='MIT',
   description = 'X-CLIP',
   author = 'Phil Wang',
@@ -19,7 +19,8 @@ setup(
     'einops>=0.3',
     'ftfy',
     'regex',
-    'torch>=1.6'
+    'torch>=1.6',
+    'torchvision'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',

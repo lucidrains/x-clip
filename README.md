@@ -33,7 +33,11 @@ clip = CLIP(
     visual_heads = 8,
     use_all_token_embeds = True,            # whether to use fine-grained contrastive learning (FILIP)
     decoupled_contrastive_learning = True,  # use decoupled contrastive learning (DCL) objective function, removing positive pairs from the denominator of the InfoNCE loss (CLOOB + DCL)
-    extra_latent_projection = True          # whether to use separate projections for text-to-image vs image-to-text comparisons (CLOOB)
+    extra_latent_projection = True,         # whether to use separate projections for text-to-image vs image-to-text comparisons (CLOOB)
+    use_simsiam = False,                    # use SimSiam self-supervised learning on images (DeCLIP)
+    use_mlm = False,                        # use masked language learning (MLM) on text (DeCLIP)
+    text_ssl_loss_weight = 0.05,            # weight for text MLM loss
+    image_ssl_loss_weight = 0.05            # weight for image SimSiam loss
 )
 
 # mock data
@@ -107,6 +111,17 @@ loss.backward()
     author  = {Xiaohua Zhai and Xiao Wang and Basil Mustafa and Andreas Steiner and Daniel Keysers and Alexander Kolesnikov and Lucas Beyer},
     year    = {2021},
     eprint  = {2111.07991},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CV}
+}
+```
+
+```bibtx
+@misc{li2021supervision,
+    title   = {Supervision Exists Everywhere: A Data Efficient Contrastive Language-Image Pre-training Paradigm},
+    author  = {Yangguang Li and Feng Liang and Lichen Zhao and Yufeng Cui and Wanli Ouyang and Jing Shao and Fengwei Yu and Junjie Yan},
+    year    = {2021},
+    eprint  = {2110.05208},
     archivePrefix = {arXiv},
     primaryClass = {cs.CV}
 }

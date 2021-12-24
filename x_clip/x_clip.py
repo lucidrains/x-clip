@@ -8,6 +8,9 @@ from torch import nn, einsum
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 
+from x_clip.mlm import MLM
+from x_clip.simsiam import SimSiam
+
 # helper functions
 
 def exists(val):
@@ -224,8 +227,16 @@ class CLIP(nn.Module):
         downsample_image_embeds = False,
         decoupled_contrastive_learning = False,
         extra_latent_projection = False,
+        use_mlm = False,
+        text_ssl_loss_weight = 0.05,
+        mlm_mask_token_id = 2,
+        mlm_pad_token_id = 0,
+        use_simsiam = False,
+        simsiam_hidden_layer = -1,
+        image_ssl_loss_weight = 0.05
     ):
         super().__init__()
+
         self.text_transformer = TextTransformer(
             dim = dim_text,
             num_tokens = num_text_tokens,
@@ -243,6 +254,31 @@ class CLIP(nn.Module):
             heads = visual_heads
         )
 
+        # text ssl
+
+        self.use_mlm = use_mlm
+        self.text_ssl_loss_weight = text_ssl_loss_weight
+
+        if use_mlm:
+            self.mlm = MLM(
+                self.text_transformer,
+                dim = dim_text,
+                num_tokens = num_text_tokens,
+                mask_token_id = mlm_mask_token_id,
+                pad_token_id = mlm_pad_token_id
+            )
+
+        # image ssl
+
+        self.use_simsiam = use_simsiam
+        self.image_ssl_loss_weight = image_ssl_loss_weight
+
+        if use_simsiam:
+            self.simsiam = SimSiam(
+                self.visual_transformer,
+                image_size = visual_image_size,
+                hidden_layer = simsiam_hidden_layer
+            )
 
         # text latent projection
 
@@ -288,6 +324,17 @@ class CLIP(nn.Module):
         text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
+
+        # ssl
+
+        text_ssl_loss = 0
+        image_ssl_loss = 0
+
+        if return_loss:
+            text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
+            image_ssl_loss = self.simsiam(image) if self.use_simsiam else 0
+
+        # get encoded text
 
         enc_text = self.text_transformer(text, mask = text_mask)
 
@@ -390,5 +437,14 @@ class CLIP(nn.Module):
         text_to_image_loss = -log(text_to_image_pos / text_to_image_denom).mean()
         image_to_text_loss = -log(image_to_text_pos / image_to_text_denom).mean()
 
-        loss = (text_to_image_loss + image_to_text_loss) / 2
+        cl_loss = (text_to_image_loss + image_to_text_loss) / 2
+
+        # calculate weights
+
+        cl_loss_weight = 1 - (self.text_ssl_loss_weight + self.image_ssl_loss_weight)
+
+        loss = (cl_loss * cl_loss_weight) \
+            + (text_ssl_loss * self.text_ssl_loss_weight) \
+            + (image_ssl_loss * self.image_ssl_loss_weight)
+
         return loss
