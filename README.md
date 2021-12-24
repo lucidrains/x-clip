@@ -38,7 +38,7 @@ clip = CLIP(
     visual_ssl_type = 'simclr',             # can be either 'simclr' or 'simsiam', depending on using DeCLIP or SLIP
     use_mlm = False,                        # use masked language learning (MLM) on text (DeCLIP)
     text_ssl_loss_weight = 0.05,            # weight for text MLM loss
-    image_ssl_loss_weight = 0.05            # weight for image SimSiam loss
+    image_ssl_loss_weight = 0.05            # weight for image self-supervised learning loss
 )
 
 # mock data
