@@ -1,6 +1,7 @@
 import math
 import copy
 from contextlib import contextmanager
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 
 from x_clip.mlm import MLM
-from x_clip.simsiam import SimSiam
+from x_clip.visual_ssl import SimSiam, SimCLR
 
 # helper functions
 
@@ -229,12 +230,13 @@ class CLIP(nn.Module):
         extra_latent_projection = False,
         use_mlm = False,
         text_ssl_loss_weight = 0.05,
-        use_simsiam = False,
-        simsiam_hidden_layer = -1,
+        use_visual_ssl = False,
+        visual_ssl_type = 'simsiam',
+        visual_ssl_hidden_layer = -1,
+        simclr_temperature = 0.1,
         image_ssl_loss_weight = 0.05
     ):
         super().__init__()
-
         self.text_transformer = TextTransformer(
             dim = dim_text,
             num_tokens = num_text_tokens + (1 if use_mlm else 0),
@@ -261,21 +263,26 @@ class CLIP(nn.Module):
             self.mlm = MLM(
                 self.text_transformer,
                 dim = dim_text,
-                num_tokens = num_text_tokens,
-                mask_token_id = num_text_tokens,
-                pad_token_id = mlm_pad_token_id
+                num_tokens = num_text_tokens
             )
 
         # image ssl
 
-        self.use_simsiam = use_simsiam
+        self.use_visual_ssl = use_visual_ssl
         self.image_ssl_loss_weight = image_ssl_loss_weight
 
-        if use_simsiam:
-            self.simsiam = SimSiam(
+        if use_visual_ssl:
+            if visual_ssl_type == 'simsiam':
+                ssl_type = SimSiam
+            elif visual_ssl_type == 'simclr':
+                ssl_type = partial(SimCLR, temperature = simclr_temperature)
+            else:
+                raise ValueError(f'unknown visual_ssl_type')
+
+            self.visual_ssl = ssl_type(
                 self.visual_transformer,
                 image_size = visual_image_size,
-                hidden_layer = simsiam_hidden_layer
+                hidden_layer = visual_ssl_hidden_layer
             )
 
         # text latent projection
@@ -330,7 +337,7 @@ class CLIP(nn.Module):
 
         if return_loss:
             text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
-            image_ssl_loss = self.simsiam(image) if self.use_simsiam else 0
+            image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
 
         # get encoded text
 

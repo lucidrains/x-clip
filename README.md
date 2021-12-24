@@ -34,7 +34,8 @@ clip = CLIP(
     use_all_token_embeds = True,            # whether to use fine-grained contrastive learning (FILIP)
     decoupled_contrastive_learning = True,  # use decoupled contrastive learning (DCL) objective function, removing positive pairs from the denominator of the InfoNCE loss (CLOOB + DCL)
     extra_latent_projection = True,         # whether to use separate projections for text-to-image vs image-to-text comparisons (CLOOB)
-    use_simsiam = False,                    # use SimSiam self-supervised learning on images (DeCLIP)
+    use_visual_ssl = True,                  # whether to do self supervised learning on iages
+    visual_ssl_type = 'simclr',             # can be either 'simclr' or 'simsiam', depending on using DeCLIP or SLIP
     use_mlm = False,                        # use masked language learning (MLM) on text (DeCLIP)
     text_ssl_loss_weight = 0.05,            # weight for text MLM loss
     image_ssl_loss_weight = 0.05            # weight for image SimSiam loss
@@ -124,5 +125,14 @@ loss.backward()
     eprint  = {2110.05208},
     archivePrefix = {arXiv},
     primaryClass = {cs.CV}
+}
+```
+
+```bibtex
+@Article{mu2021slip,
+    author  = {Norman Mu and Alexander Kirillov and David Wagner and Saining Xie},
+    title   = {SLIP: Self-supervision meets Language-Image Pre-training},
+    journal = {arXiv preprint arXiv:2112.12750},
+    year    = {2021},
 }
 ```

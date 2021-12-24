@@ -9,6 +9,36 @@ import torch.nn.functional as F
 from torchvision import transforms as T
 from einops import rearrange
 
+# augmentations
+
+class RandomApply(nn.Module):
+    def __init__(self, fn, p):
+        super().__init__()
+        self.fn = fn
+        self.p = p
+    def forward(self, x):
+        if random.random() > self.p:
+            return x
+        return self.fn(x)
+
+def get_default_aug(image_size):
+    return torch.nn.Sequential(
+        RandomApply(
+            T.ColorJitter(0.8, 0.8, 0.8, 0.2),
+            p = 0.3
+        ),
+        T.RandomGrayscale(p=0.2),
+        T.RandomHorizontalFlip(),
+        RandomApply(
+            T.GaussianBlur((3, 3), (1.0, 2.0)),
+            p = 0.2
+        ),
+        T.RandomResizedCrop((image_size, image_size)),
+        T.Normalize(
+            mean=torch.tensor([0.485, 0.456, 0.406]),
+            std=torch.tensor([0.229, 0.224, 0.225])),
+    )
+
 # helper functions
 
 def default(val, def_val):
@@ -38,6 +68,31 @@ def set_requires_grad(model, val):
     for p in model.parameters():
         p.requires_grad = val
 
+# simclr loss fn
+
+def contrastive_loss(queries, keys, temperature = 0.1):
+    b, device = queries.shape[0], queries.device
+    logits = queries @ keys.t()
+    logits = logits - logits.max(dim=-1, keepdim=True).values
+    logits /= temperature
+    return F.cross_entropy(logits, torch.arange(b, device=device))
+
+def nt_xent_loss(queries, keys, temperature = 0.1):
+    b, device = queries.shape[0], queries.device
+
+    n = b * 2
+    projs = torch.cat((queries, keys))
+    logits = projs @ projs.t()
+
+    mask = torch.eye(n, device=device).bool()
+    logits = logits[~mask].reshape(n, n - 1)
+    logits /= temperature
+
+    labels = torch.cat(((torch.arange(b, device=device) + b - 1), torch.arange(b, device=device)), dim=0)
+    loss = F.cross_entropy(logits, labels, reduction='sum')
+    loss /= n
+    return loss
+
 # loss fn
 
 def loss_fn(x, y):
@@ -45,23 +100,13 @@ def loss_fn(x, y):
     y = F.normalize(y, dim=-1, p=2)
     return 2 - 2 * (x * y).sum(dim=-1)
 
-# augmentation utils
-
-class RandomApply(nn.Module):
-    def __init__(self, fn, p):
-        super().__init__()
-        self.fn = fn
-        self.p = p
-    def forward(self, x):
-        if random.random() > self.p:
-            return x
-        return self.fn(x)
-
 # MLP class for projector and predictor
 
 class MLP(nn.Module):
-    def __init__(self, dim, projection_size, hidden_size = 4096):
+    def __init__(self, dim, projection_size, hidden_size = None):
         super().__init__()
+        hidden_size = default(hidden_size, dim)
+
         self.net = nn.Sequential(
             nn.Linear(dim, hidden_size),
             nn.BatchNorm1d(hidden_size),
@@ -77,7 +122,7 @@ class MLP(nn.Module):
 # and pipe it into the projecter and predictor nets
 
 class NetWrapper(nn.Module):
-    def __init__(self, net, projection_size, projection_hidden_size, layer = -2):
+    def __init__(self, net, projection_size, projection_hidden_size = None, layer = -2):
         super().__init__()
         self.net = net
         self.layer = layer
@@ -158,24 +203,7 @@ class SimSiam(nn.Module):
 
         # default SimCLR augmentation
 
-        DEFAULT_AUG = torch.nn.Sequential(
-            RandomApply(
-                T.ColorJitter(0.8, 0.8, 0.8, 0.2),
-                p = 0.3
-            ),
-            T.RandomGrayscale(p=0.2),
-            T.RandomHorizontalFlip(),
-            RandomApply(
-                T.GaussianBlur((3, 3), (1.0, 2.0)),
-                p = 0.2
-            ),
-            T.RandomResizedCrop((image_size, image_size)),
-            T.Normalize(
-                mean=torch.tensor([0.485, 0.456, 0.406]),
-                std=torch.tensor([0.229, 0.224, 0.225])),
-        )
-
-        self.augment1 = default(augment_fn, DEFAULT_AUG)
+        self.augment1 = default(augment_fn, get_default_aug(image_size))
         self.augment2 = default(augment_fn2, self.augment1)
 
         self.online_encoder = NetWrapper(net, projection_size, projection_hidden_size, layer=hidden_layer)
@@ -219,3 +247,51 @@ class SimSiam(nn.Module):
 
         loss = loss_one + loss_two
         return loss.mean()
+
+# SimCLR
+
+class SimCLR(nn.Module):
+    def __init__(
+        self,
+        net,
+        image_size,
+        hidden_layer = -2,
+        project_hidden = True,
+        project_dim = 128,
+        augment_both = True,
+        use_nt_xent_loss = False,
+        augment_fn = None,
+        temperature = 0.1
+    ):
+        super().__init__()
+        self.net = NetWrapper(net, project_dim, layer = hidden_layer)
+
+        self.augment = default(augment_fn, get_default_aug(image_size))
+
+        self.augment_both = augment_both
+
+        self.temperature = temperature
+        self.use_nt_xent_loss = use_nt_xent_loss
+
+        self.project_hidden = project_hidden
+        self.projection = None
+        self.project_dim = project_dim
+
+        # send a mock image tensor to instantiate parameters
+        self.forward(torch.randn(1, 3, image_size, image_size))
+
+    @singleton('bilinear_w')
+    def _get_bilinear(self, hidden):
+        _, dim = hidden.shape
+        return nn.Parameter(torch.eye(dim, device=device, dtype=dtype)).to(hidden)
+
+    def forward(self, x, accumulate = False):
+        b, c, h, w, device = *x.shape, x.device
+        transform_fn = self.augment if self.augment_both else noop
+
+        queries, _ = self.net(transform_fn(x))
+        keys, _    = self.net(self.augment(x))
+
+        queries, keys = map(flatten, (queries, keys))
+        loss = nt_xent_loss(queries, keys, temperature = self.temperature)
+        return loss
