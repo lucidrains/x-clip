@@ -229,8 +229,6 @@ class CLIP(nn.Module):
         extra_latent_projection = False,
         use_mlm = False,
         text_ssl_loss_weight = 0.05,
-        mlm_mask_token_id = 2,
-        mlm_pad_token_id = 0,
         use_simsiam = False,
         simsiam_hidden_layer = -1,
         image_ssl_loss_weight = 0.05
@@ -239,7 +237,7 @@ class CLIP(nn.Module):
 
         self.text_transformer = TextTransformer(
             dim = dim_text,
-            num_tokens = num_text_tokens,
+            num_tokens = num_text_tokens + (1 if use_mlm else 0),
             max_seq_len = text_seq_len,
             depth = text_enc_depth,
             heads = text_heads
@@ -264,7 +262,7 @@ class CLIP(nn.Module):
                 self.text_transformer,
                 dim = dim_text,
                 num_tokens = num_text_tokens,
-                mask_token_id = mlm_mask_token_id,
+                mask_token_id = num_text_tokens,
                 pad_token_id = mlm_pad_token_id
             )
 
