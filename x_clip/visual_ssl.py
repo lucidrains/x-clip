@@ -68,6 +68,9 @@ def set_requires_grad(model, val):
     for p in model.parameters():
         p.requires_grad = val
 
+def l2norm(t):
+    return F.normalize(t, p = 2, dim = -1)
+
 # simclr loss fn
 
 def contrastive_loss(queries, keys, temperature = 0.1):
@@ -96,8 +99,8 @@ def nt_xent_loss(queries, keys, temperature = 0.1):
 # loss fn
 
 def loss_fn(x, y):
-    x = F.normalize(x, dim=-1, p=2)
-    y = F.normalize(y, dim=-1, p=2)
+    x = l2norm(x)
+    y = l2norm(y)
     return 2 - 2 * (x * y).sum(dim=-1)
 
 # MLP class for projector and predictor
@@ -216,16 +219,8 @@ class SimSiam(nn.Module):
         # send a mock image tensor to instantiate singleton parameters
         self.forward(torch.randn(2, 3, image_size, image_size, device=device))
 
-    def forward(
-        self,
-        x,
-        return_embedding = False,
-        return_projection = True
-    ):
+    def forward(self, x):
         assert not (self.training and x.shape[0] == 1), 'you must have greater than 1 sample when training, due to the batchnorm in the projection layer'
-
-        if return_embedding:
-            return self.online_encoder(x, return_projection = return_projection)
 
         image_one, image_two = self.augment1(x), self.augment2(x)
 
@@ -242,8 +237,8 @@ class SimSiam(nn.Module):
             target_proj_one.detach_()
             target_proj_two.detach_()
 
-        loss_one = loss_fn(online_pred_one, target_proj_two.detach())
-        loss_two = loss_fn(online_pred_two, target_proj_one.detach())
+        loss_one = loss_fn(online_pred_one, target_proj_two)
+        loss_two = loss_fn(online_pred_two, target_proj_one)
 
         loss = loss_one + loss_two
         return loss.mean()
@@ -267,25 +262,15 @@ class SimCLR(nn.Module):
         self.net = NetWrapper(net, project_dim, layer = hidden_layer)
 
         self.augment = default(augment_fn, get_default_aug(image_size))
-
         self.augment_both = augment_both
 
         self.temperature = temperature
         self.use_nt_xent_loss = use_nt_xent_loss
 
-        self.project_hidden = project_hidden
-        self.projection = None
-        self.project_dim = project_dim
-
         # send a mock image tensor to instantiate parameters
         self.forward(torch.randn(1, 3, image_size, image_size))
 
-    @singleton('bilinear_w')
-    def _get_bilinear(self, hidden):
-        _, dim = hidden.shape
-        return nn.Parameter(torch.eye(dim, device=device, dtype=dtype)).to(hidden)
-
-    def forward(self, x, accumulate = False):
+    def forward(self, x):
         b, c, h, w, device = *x.shape, x.device
         transform_fn = self.augment if self.augment_both else noop
 
