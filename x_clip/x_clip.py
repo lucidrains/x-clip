@@ -211,6 +211,7 @@ class CLIP(nn.Module):
     def __init__(
         self,
         *,
+        image_encoder = None,
         dim_text = 512,
         dim_image = 512,
         dim_latent = 512,
@@ -218,7 +219,6 @@ class CLIP(nn.Module):
         text_enc_depth = 6,
         text_seq_len = 256,
         text_heads = 8,
-        num_visual_tokens = 512,
         visual_enc_depth = 6,
         visual_heads = 8,
         visual_image_size = 256,
@@ -237,6 +237,9 @@ class CLIP(nn.Module):
         image_ssl_loss_weight = 0.05
     ):
         super().__init__()
+
+        # instantiate text transformer
+
         self.text_transformer = TextTransformer(
             dim = dim_text,
             num_tokens = num_text_tokens + (1 if use_mlm else 0),
@@ -245,14 +248,19 @@ class CLIP(nn.Module):
             heads = text_heads
         )
 
-        self.visual_transformer = VisionTransformer(
-            dim = dim_image,
-            image_size = visual_image_size,
-            patch_size = visual_patch_size,
-            channels = channels,
-            depth = visual_enc_depth,
-            heads = visual_heads
-        )
+        # instantiate image transformer
+
+        if exists(image_encoder):
+            self.visual_transformer = image_encoder
+        else:
+            self.visual_transformer = VisionTransformer(
+                dim = dim_image,
+                image_size = visual_image_size,
+                patch_size = visual_patch_size,
+                channels = channels,
+                depth = visual_enc_depth,
+                heads = visual_heads
+            )
 
         # text ssl
 

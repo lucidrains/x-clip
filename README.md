@@ -26,7 +26,6 @@ clip = CLIP(
     text_enc_depth = 6,
     text_seq_len = 256,
     text_heads = 8,
-    num_visual_tokens = 512,
     visual_enc_depth = 6,
     visual_image_size = 256,
     visual_patch_size = 32,
@@ -57,6 +56,52 @@ loss = clip(
     return_loss = True              # needs to be set to True to return contrastive loss
 )
 
+loss.backward()
+```
+
+You can also pass in an external visual transformer / residual net. You simply have to make sure your image encoder returns a set of embeddings in the shape of `batch x seq x dim`, and make sure `dim_image` is properly specified as the dimension of the returned embeddings. Below is an example using vision transformer from `vit_pytorch`
+
+```bash
+$ pip install vit_pytorch>=0.25.6
+```
+
+```python
+import torch
+from x_clip import CLIP
+
+from vit_pytorch import ViT
+from vit_pytorch.extractor import Extractor
+
+base_vit = ViT(
+    image_size = 256,
+    patch_size = 32,
+    num_classes = 1000,
+    dim = 512,
+    depth = 6,
+    heads = 16,
+    mlp_dim = 2048,
+    dropout = 0.1,
+    emb_dropout = 0.1
+)
+
+vit = Extractor(base_vit, return_embeddings_only = True)
+
+clip = CLIP(
+    image_encoder = vit,
+    dim_image = 512,           # must be set as the same dimensions as the vision transformer above
+    dim_text = 512,
+    dim_latent = 512,
+    num_text_tokens = 10000,
+    text_enc_depth = 6,
+    text_seq_len = 256,
+    text_heads = 8
+)
+
+text = torch.randint(0, 10000, (4, 256))
+images = torch.randn(4, 3, 256, 256)
+mask = torch.ones_like(text).bool()
+
+loss = clip(text, images, text_mask = mask, return_loss = True)
 loss.backward()
 ```
 
