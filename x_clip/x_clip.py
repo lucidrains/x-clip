@@ -212,6 +212,7 @@ class CLIP(nn.Module):
         self,
         *,
         image_encoder = None,
+        text_encoder = None,
         dim_text = 512,
         dim_image = 512,
         dim_latent = 512,
@@ -240,13 +241,16 @@ class CLIP(nn.Module):
 
         # instantiate text transformer
 
-        self.text_transformer = TextTransformer(
-            dim = dim_text,
-            num_tokens = num_text_tokens + (1 if use_mlm else 0),
-            max_seq_len = text_seq_len,
-            depth = text_enc_depth,
-            heads = text_heads
-        )
+        if exists(text_encoder):
+            self.text_transformer = text_encoder
+        else:
+            self.text_transformer = TextTransformer(
+                dim = dim_text,
+                num_tokens = num_text_tokens + (1 if use_mlm else 0),
+                max_seq_len = text_seq_len + 1,
+                depth = text_enc_depth,
+                heads = text_heads
+            )
 
         # instantiate image transformer
 

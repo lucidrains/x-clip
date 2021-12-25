@@ -84,7 +84,10 @@ base_vit = ViT(
     emb_dropout = 0.1
 )
 
-vit = Extractor(base_vit, return_embeddings_only = True)
+vit = Extractor(
+    base_vit,
+    return_embeddings_only = True
+)
 
 clip = CLIP(
     image_encoder = vit,
@@ -95,6 +98,56 @@ clip = CLIP(
     text_enc_depth = 6,
     text_seq_len = 256,
     text_heads = 8
+)
+
+text = torch.randint(0, 10000, (4, 256))
+images = torch.randn(4, 3, 256, 256)
+mask = torch.ones_like(text).bool()
+
+loss = clip(text, images, text_mask = mask, return_loss = True)
+loss.backward()
+```
+
+Finally, one can also have the text transformer be externally defined. It will need to return the embeddings including the CLS token, for now.
+
+```python
+import torch
+from x_clip import CLIP, TextTransformer
+
+from vit_pytorch import ViT
+from vit_pytorch.extractor import Extractor
+
+base_vit = ViT(
+    image_size = 256,
+    patch_size = 32,
+    num_classes = 1000,
+    dim = 512,
+    depth = 6,
+    heads = 16,
+    mlp_dim = 2048,
+    dropout = 0.1,
+    emb_dropout = 0.1
+)
+
+image_encoder = Extractor(
+    base_vit,
+    return_embeddings_only = True
+)
+
+text_encoder = TextTransformer(
+    dim = 512,
+    num_tokens = 10000,
+    max_seq_len = 256 + 1,
+    depth = 6,
+    heads = 8
+)
+
+clip = CLIP(
+    image_encoder = image_encoder,
+    text_encoder = text_encoder,
+    dim_image = 512,
+    dim_text = 512,
+    dim_latent = 512
 )
 
 text = torch.randint(0, 10000, (4, 256))
