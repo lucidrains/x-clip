@@ -137,7 +137,7 @@ image_encoder = Extractor(
 text_encoder = TextTransformer(
     dim = 512,
     num_tokens = 10000,
-    max_seq_len = 256 + 1,
+    max_seq_len = 256,
     depth = 6,
     heads = 8
 )
