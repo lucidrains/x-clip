@@ -260,12 +260,13 @@ class SimCLR(nn.Module):
     ):
         super().__init__()
         self.net = NetWrapper(net, project_dim, layer = hidden_layer)
-
         self.augment = default(augment_fn, get_default_aug(image_size))
         self.augment_both = augment_both
-
         self.temperature = temperature
-        self.use_nt_xent_loss = use_nt_xent_loss
+
+        # get device of network and make wrapper same device
+        device = get_module_device(net)
+        self.to(device)
 
         # send a mock image tensor to instantiate parameters
         self.forward(torch.randn(1, 3, image_size, image_size))
