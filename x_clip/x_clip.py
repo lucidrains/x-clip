@@ -338,6 +338,7 @@ class CLIP(nn.Module):
         text_mask = None,
         return_loss = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
+        freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
@@ -353,7 +354,13 @@ class CLIP(nn.Module):
 
         # get encoded text
 
-        enc_text = self.text_transformer(text, mask = text_mask)
+        text_encoding_context = null_context if not freeze_text_encoder else torch.no_grad
+
+        with text_encoding_context():
+            enc_text = self.text_transformer(text, mask = text_mask)
+
+            if freeze_text_encoder:
+                enc_text.detach_()
 
         # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
 
