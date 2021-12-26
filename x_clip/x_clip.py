@@ -220,10 +220,12 @@ class CLIP(nn.Module):
         text_enc_depth = 6,
         text_seq_len = 256,
         text_heads = 8,
+        text_has_cls_token = True,
         visual_enc_depth = 6,
         visual_heads = 8,
         visual_image_size = 256,
         visual_patch_size = 32,
+        visual_has_cls_token = True,
         channels = 3,
         use_all_token_embeds = False,
         downsample_image_embeds = False,
@@ -238,8 +240,11 @@ class CLIP(nn.Module):
         image_ssl_loss_weight = 0.05
     ):
         super().__init__()
+        assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
 
         # instantiate text transformer
+
+        self.text_has_cls_token = text_has_cls_token
 
         if exists(text_encoder):
             self.text_transformer = text_encoder
@@ -253,6 +258,8 @@ class CLIP(nn.Module):
             )
 
         # instantiate image transformer
+
+        self.visual_has_cls_token = visual_has_cls_token
 
         if exists(image_encoder):
             self.visual_transformer = image_encoder
@@ -375,8 +382,8 @@ class CLIP(nn.Module):
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
         if self.use_all_token_embeds:
-            text_embeds = enc_text[:, 1:]
-            image_embeds = enc_image[:, 1:]
+            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
+            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
         else:
             text_embeds = enc_text[:, 0]
             image_embeds = enc_image[:, 0]
