@@ -356,6 +356,33 @@ class CLIP(nn.Module):
 
             all_text_latents  = torch.cat(all_text_latents, dim=0)
             all_image_latents = torch.cat(all_image_latents, dim=0)
+
+            #all_text_latents_ag  = [torch.zeros_like(text_latents)  for _ in range(dist.get_world_size())]
+            #all_image_latents_ag = [torch.zeros_like(image_latents) for _ in range(dist.get_world_size())]
+
+            #all_gather(all_text_latents, text_latents)
+            #all_gather(all_image_latents, image_latents)
+            #all_text_latents_ag  = all_gather2(all_text_latents_ag, text_latents)
+            #all_image_latents_ag = all_gather2(all_image_latents_ag, image_latents)
+
+            #all_text_latents  = all_gather3(text_latents)
+            #all_image_latents = all_gather3(image_latents)
+
+
+            # Based on: https://github.com/mlfoundations/open_clip/blob/main/src/training/train.py#L40
+            # use all latents with current samples incorporated
+            #rank = dist.get_rank()
+            #all_image_latents = torch.cat(
+            #    [image_latents]
+            #    + all_image_latents[:rank]
+            #    + all_image_latents[rank + 1 :]
+            #)
+            #all_text_latents = torch.cat(
+            #    [text_latents]
+            #    + all_text_latents[:rank]
+            #    + all_text_latents[rank + 1 :]
+            #)
+
             # TO DO: Check all gather order to verification, as there was once a bug in it!
 
         if self.use_all_token_embeds:
@@ -455,3 +482,80 @@ class CLIP(nn.Module):
 
         loss = (text_to_image_loss + image_to_text_loss) / 2
         return loss
+
+
+# From: https://github.com/vlkit/vlkit/blob/master/vlkit/ops/distributed.py
+class AllGather(torch.autograd.Function):
+    """
+    all_gather with gradient back-propagation
+    """
+    @staticmethod
+    def forward(ctx, tensor_list, tensor):
+        dist.all_gather(tensor_list, tensor)
+        return tuple(tensor_list)
+
+    @staticmethod
+    def backward(ctx, *grad_list):
+        grad_list = list(grad_list)
+        rank = dist.get_rank()
+
+        #print([grad_list[i].is_contiguous() for i in range(dist.get_world_size())])
+
+        dist_ops = [
+            dist.reduce(grad_list[i].contiguous(), i, async_op=True) for i in range(dist.get_world_size())
+            dist.reduce(grad_list[i].contiguous() if not grad_list[i].is_contiguous() else grad_list[i], i, async_op=True) for i in range(di  st.get_world_size())
+        ]
+
+        for op in dist_ops:
+            op.wait()
+
+        return None, grad_list[rank]
+
+
+all_gather = AllGather.apply
+
+
+# From: https://github.com/Spijkervet/SimCLR/blob/master/simclr/modules/gather.py
+class GatherLayer(torch.autograd.Function):
+    """Gather tensors from all process, supporting backward propagation."""
+
+    @staticmethod
+    def forward(ctx, input):
+        ctx.save_for_backward(input)
+        output = [torch.zeros_like(input) for _ in range(dist.get_world_size())]
+        dist.all_gather(output, input)
+        return tuple(output)
+
+    @staticmethod
+    def backward(ctx, *grads):
+        (input,) = ctx.saved_tensors
+        grad_out = torch.zeros_like(input)
+        grad_out[:] = grads[dist.get_rank()]
+        return grad_out
+
+all_gather2 = GatherLayer.apply
+
+
+# From: https://github.com/PyTorchLightning/lightning-bolts/blob/master/pl_bolts/models/self_supervised/simclr/simclr_module.py#L20
+class SyncFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor):
+        ctx.batch_size = tensor.shape[0]
+
+        gathered_tensor = [torch.zeros_like(tensor) for _ in range(torch.distributed.get_world_size())]
+
+        torch.distributed.all_gather(gathered_tensor, tensor)
+        gathered_tensor = torch.cat(gathered_tensor, 0)
+
+        return gathered_tensor
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input = grad_output.clone()
+        torch.distributed.all_reduce(grad_input, op=torch.distributed.ReduceOp.SUM, async_op=False)
+
+        idx_from = torch.distributed.get_rank() * ctx.batch_size
+        idx_to = (torch.distributed.get_rank() + 1) * ctx.batch_size
+        return grad_input[idx_from:idx_to]
+
+all_gather3 = SyncFunction.apply
