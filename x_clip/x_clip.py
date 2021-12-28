@@ -10,6 +10,9 @@ import torch.distributed as dist
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 
+from x_clip.mlm import MLM
+from x_clip.visual_ssl import SimSiam, SimCLR
+
 # helper functions
 
 def exists(val):
@@ -209,6 +212,8 @@ class CLIP(nn.Module):
     def __init__(
         self,
         *,
+        image_encoder = None,
+        text_encoder = None,
         dim_text = 512,
         dim_image = 512,
         dim_latent = 512,
@@ -216,39 +221,89 @@ class CLIP(nn.Module):
         text_enc_depth = 6,
         text_seq_len = 256,
         text_heads = 8,
-        num_visual_tokens = 512,
+        text_has_cls_token = True,
         visual_enc_depth = 6,
         visual_heads = 8,
         visual_image_size = 256,
         visual_patch_size = 32,
+        visual_has_cls_token = True,
         channels = 3,
         use_all_token_embeds = False,
         downsample_image_embeds = False,
         decoupled_contrastive_learning = False,
         extra_latent_projection = False,
-        loss_over_ranks = False,
+        use_mlm = False,
+        text_ssl_loss_weight = 0.05,
+        use_visual_ssl = False,
+        visual_ssl_type = 'simsiam',
+        visual_ssl_hidden_layer = -1,
+        simclr_temperature = 0.1,
+        image_ssl_loss_weight = 0.05
     ):
         super().__init__()
+        assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
 
-        self.loss_over_ranks = loss_over_ranks 
+        # instantiate text transformer
 
-        self.text_transformer = TextTransformer(
-            dim = dim_text,
-            num_tokens = num_text_tokens,
-            max_seq_len = text_seq_len,
-            depth = text_enc_depth,
-            heads = text_heads
-        )
+        self.text_has_cls_token = text_has_cls_token
 
-        self.visual_transformer = VisionTransformer(
-            dim = dim_image,
-            image_size = visual_image_size,
-            patch_size = visual_patch_size,
-            channels = channels,
-            depth = visual_enc_depth,
-            heads = visual_heads
-        )
+        if exists(text_encoder):
+            self.text_transformer = text_encoder
+        else:
+            self.text_transformer = TextTransformer(
+                dim = dim_text,
+                num_tokens = num_text_tokens + (1 if use_mlm else 0),
+                max_seq_len = text_seq_len,
+                depth = text_enc_depth,
+                heads = text_heads
+            )
 
+        # instantiate image transformer
+
+        self.visual_has_cls_token = visual_has_cls_token
+
+        if exists(image_encoder):
+            self.visual_transformer = image_encoder
+        else:
+            self.visual_transformer = VisionTransformer(
+                dim = dim_image,
+                image_size = visual_image_size,
+                patch_size = visual_patch_size,
+                channels = channels,
+                depth = visual_enc_depth,
+                heads = visual_heads
+            )
+
+        # text ssl
+
+        self.use_mlm = use_mlm
+        self.text_ssl_loss_weight = text_ssl_loss_weight
+
+        if use_mlm:
+            self.mlm = MLM(
+                self.text_transformer,
+                dim = dim_text,
+                num_tokens = num_text_tokens
+            )
+
+        # image ssl
+
+        self.use_visual_ssl = use_visual_ssl
+        self.image_ssl_loss_weight = image_ssl_loss_weight
+
+        if use_visual_ssl:
+            if visual_ssl_type == 'simsiam':
+                ssl_type = SimSiam
+            elif visual_ssl_type == 'simclr':
+                ssl_type = partial(SimCLR, temperature = simclr_temperature)
+            else:
+                raise ValueError(f'unknown visual_ssl_type')
+
+            self.visual_ssl = ssl_type(
+                self.visual_transformer,
+                image_size = visual_image_size,
+                hidden_layer = visual_ssl_hidden_layer
+            )
 
         # text latent projection
 
@@ -291,11 +346,29 @@ class CLIP(nn.Module):
         text_mask = None,
         return_loss = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
+        freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
 
-        enc_text = self.text_transformer(text, mask = text_mask)
+        # ssl
+
+        text_ssl_loss = 0
+        image_ssl_loss = 0
+
+        if return_loss:
+            text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
+            image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
+
+        # get encoded text
+
+        text_encoding_context = null_context if not freeze_text_encoder else torch.no_grad
+
+        with text_encoding_context():
+            enc_text = self.text_transformer(text, mask = text_mask)
+
+            if freeze_text_encoder:
+                enc_text.detach_()
 
         # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
 
@@ -310,8 +383,8 @@ class CLIP(nn.Module):
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
         if self.use_all_token_embeds:
-            text_embeds = enc_text[:, 1:]
-            image_embeds = enc_image[:, 1:]
+            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
+            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
         else:
             text_embeds = enc_text[:, 0]
             image_embeds = enc_image[:, 0]
@@ -480,7 +553,16 @@ class CLIP(nn.Module):
         text_to_image_loss = -torch.log(text_to_image_pos / text_to_image_denom).mean()
         image_to_text_loss = -torch.log(image_to_text_pos / image_to_text_denom).mean()
 
-        loss = (text_to_image_loss + image_to_text_loss) / 2
+        cl_loss = (text_to_image_loss + image_to_text_loss) / 2
+
+        # calculate weights
+
+        cl_loss_weight = 1 - (self.text_ssl_loss_weight + self.image_ssl_loss_weight)
+
+        loss = (cl_loss * cl_loss_weight) \
+            + (text_ssl_loss * self.text_ssl_loss_weight) \
+            + (image_ssl_loss * self.image_ssl_loss_weight)
+
         return loss
 
 
