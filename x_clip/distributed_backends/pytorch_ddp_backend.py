@@ -3,7 +3,7 @@ import torch
 from .distributed_backend import DistributedBackend
 
 
-class HorovodBackend(DistributedBackend):
+class PyTorchDDPBackend(DistributedBackend):
     """Distributed backend using Horovod."""
 
     BACKEND_MODULE_NAME = 'torch.distributed'
