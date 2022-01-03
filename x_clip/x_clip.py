@@ -567,34 +567,34 @@ class CLIP(nn.Module):
 
 
 # From: https://github.com/vlkit/vlkit/blob/master/vlkit/ops/distributed.py
-class AllGather(torch.autograd.Function):
-    """
-    all_gather with gradient back-propagation
-    """
-    @staticmethod
-    def forward(ctx, tensor_list, tensor):
-        dist.all_gather(tensor_list, tensor)
-        return tuple(tensor_list)
-
-    @staticmethod
-    def backward(ctx, *grad_list):
-        grad_list = list(grad_list)
-        rank = dist.get_rank()
-
-        #print([grad_list[i].is_contiguous() for i in range(dist.get_world_size())])
-
-        dist_ops = [
-            dist.reduce(grad_list[i].contiguous(), i, async_op=True) for i in range(dist.get_world_size())
-            dist.reduce(grad_list[i].contiguous() if not grad_list[i].is_contiguous() else grad_list[i], i, async_op=True) for i in range(di  st.get_world_size())
-        ]
-
-        for op in dist_ops:
-            op.wait()
-
-        return None, grad_list[rank]
-
-
-all_gather = AllGather.apply
+#class AllGather(torch.autograd.Function):
+#    """
+#    all_gather with gradient back-propagation
+#    """
+#    @staticmethod
+#    def forward(ctx, tensor_list, tensor):
+#        dist.all_gather(tensor_list, tensor)
+#        return tuple(tensor_list)
+#
+#    @staticmethod
+#    def backward(ctx, *grad_list):
+#        grad_list = list(grad_list)
+#        rank = dist.get_rank()
+#
+#        #print([grad_list[i].is_contiguous() for i in range(dist.get_world_size())])
+#
+#        dist_ops = [
+#            dist.reduce(grad_list[i].contiguous(), i, async_op=True) for i in range(dist.get_world_size())
+#            dist.reduce(grad_list[i].contiguous() if not grad_list[i].is_contiguous() else grad_list[i], i, async_op=True) for i in range(dist.get_world_size())
+#        ]
+#
+#        for op in dist_ops:
+#            op.wait()
+#
+#        return None, grad_list[rank]
+#
+#
+#all_gather = AllGather.apply
 
 
 # From: https://github.com/Spijkervet/SimCLR/blob/master/simclr/modules/gather.py
