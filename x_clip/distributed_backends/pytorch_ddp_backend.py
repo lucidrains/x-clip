@@ -25,10 +25,10 @@ class PyTorchDDPBackend(DistributedBackend):
         os.environ['MASTER_PORT'] = '12355'
 
         # initialize the process group
-        self.backend_module.init_process_group("nccl", rank=self._get_local_rank, world_size=self._get_world_size)
+        self.backend_module.init_process_group("nccl", rank=self.get_local_rank, world_size=self.get_world_size)
 
         if torch.cuda.is_available():
-            torch.cuda.set_device(self._get_local_rank())
+            torch.cuda.set_device(self.get_local_rank())
 
         assert self.backend_module.is_initialized(), "PyTorch DDP backend is not initialized."
 
@@ -40,8 +40,8 @@ class PyTorchDDPBackend(DistributedBackend):
 
     def _get_local_rank(self):
         #return self.backend_module.local_rank()
-        # TO DO: Check how local vs global ranks is handled with PyTorch DDP. In the meantime wie return self._get_rank
-        return self._get_rank() # == return self.backend_module.get_rank()
+        # TO DO: Check how local vs global ranks is handled with PyTorch DDP. In the meantime wie return self.get_rank
+        return self.get_rank() # == return self.backend_module.get_rank()
 
     def _local_barrier(self):
         self.backend_module.barrier()
@@ -57,8 +57,8 @@ class PyTorchDDPBackend(DistributedBackend):
             **_kwargs,
     ):
         # TO DO: Horovod setup uses self.ROOT_RANK, investigate why and if we need that setup here.
-        model.to(self._get_local_rank())
-        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self._get_local_rank()])
+        model.to(self.get_local_rank())
+        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.get_local_rank()])
 
         # Based on: https://discuss.pytorch.org/t/delete-parameter-group-from-optimizer/46814/8
         # Remove parameters and add new parameter group after model is wrapped in DDP.
@@ -72,5 +72,5 @@ class PyTorchDDPBackend(DistributedBackend):
 
     def _average_all(self, tensor):
         # Reduce op is average by default
-        averaged = self.backend_module.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, async_op=False) / self._get_world_size()
+        averaged = self.backend_module.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, async_op=False) / self.get_world_size()
         return averaged

@@ -172,7 +172,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
     step = 0
 
     logger.info(f"{datetime.now()} rank: {args.rank} world_size: {args.world_size}")
-    setup(args.rank, args.world_size)
+    #setup(args.rank, args.world_size)
     logger.info(f"{datetime.now()} rank: {args.rank} ddp setup")
     model.to(args.rank)
     logger.info(f"{datetime.now()} rank: {args.rank} model moved to rank {args.rank}")
@@ -335,7 +335,9 @@ def trainer():
     # get args
     args = get_args()
     distr_backend = distributed_utils.set_backend_from_args(args)
+    print(distr_backend)
     distr_backend.initialize()
+    print(distr_backend)
     args.world_size = distr_backend.get_world_size()
     # TO DO: Check if env var is needed for slurm setup
     #if "WORLD_SIZE" in os.environ:
