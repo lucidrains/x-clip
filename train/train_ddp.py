@@ -67,8 +67,6 @@ def get_args():
                         help="image encoder dim_image (default: 512)")
     parser.add_argument("--dim-latent", type=int, default=512,
                         help="dim_latent (default: 512)")
-    parser.add_argument("--num-visual-tokens", type=int, default=512,
-                        help="num_visual_tokens (default: 512)")
     parser.add_argument("--text-enc-depth", type=int, default=6,
                         help="text_enc_depth (default: 6)")
     parser.add_argument("--text-seq-len", type=int, default=256,
@@ -334,11 +332,10 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
 def trainer():
 
-    distr_backend = distributed_utils.set_backend_from_args(args)
-    distr_backend.initialize()
-
     # get args
     args = get_args()
+    distr_backend = distributed_utils.set_backend_from_args(args)
+    distr_backend.initialize()
     args.world_size = distr_backend.get_world_size()
     # TO DO: Check if env var is needed for slurm setup
     #if "WORLD_SIZE" in os.environ:
@@ -409,7 +406,6 @@ def trainer():
             text_enc_depth = args.text_enc_depth,
             text_seq_len = args.text_seq_len,
             text_heads = args.text_heads,
-            num_visual_tokens = args.num_visual_tokens,
             visual_enc_depth = args.visual_enc_depth,
             visual_heads = args.visual_heads,
             visual_image_size = args.visual_image_size,

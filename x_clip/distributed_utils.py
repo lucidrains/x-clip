@@ -11,10 +11,8 @@ You can check whether a backend is in use with the `using_backend`
 function.
 """
 
-from x_clip.distributed_backends import \
-    PyTorchDDPBackend, \
+from x_clip.distributed_backends import PyTorchDDPBackend, DummyBackend
 #    DeepSpeedBackend, \
-#    DummyBackend, \
 #    HorovodBackend
 
 _DEFAULT_BACKEND = DummyBackend()
@@ -52,8 +50,8 @@ def set_backend_from_args(args):
     global is_distributed, backend
 
     # Handle this specially for backwards compatibility.
-    if args.deepspeed:
-        args.distributed_backend = DeepSpeedBackend.BACKEND_NAME
+    #if args.deepspeed:
+    #    args.distributed_backend = DeepSpeedBackend.BACKEND_NAME
 
     if not args.distributed_backend:
         is_distributed = False

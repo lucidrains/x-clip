@@ -238,7 +238,8 @@ class CLIP(nn.Module):
         visual_ssl_type = 'simsiam',
         visual_ssl_hidden_layer = -1,
         simclr_temperature = 0.1,
-        image_ssl_loss_weight = 0.05
+        image_ssl_loss_weight = 0.05,
+        loss_over_ranks = False,
     ):
         super().__init__()
         assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
@@ -338,6 +339,9 @@ class CLIP(nn.Module):
 
         self.to_text_latent_extra = copy.deepcopy(self.to_text_latent)
         self.to_visual_latent_extra = copy.deepcopy(self.to_visual_latent)
+
+        # loss ove ranks
+        self.loss_over_ranks = loss_over_ranks
 
     def forward(
         self,
