@@ -30,7 +30,7 @@ class PyTorchDDPBackend(DistributedBackend):
         if torch.cuda.is_available():
             torch.cuda.set_device(self._get_local_rank())
 
-        assert self.backend_module.is_initialized(), "PyTorch DDP backend is initialized."
+        assert self.backend_module.is_initialized(), "PyTorch DDP backend is not initialized."
 
     def _get_world_size(self):
         return self.backend_module.get_world_size()

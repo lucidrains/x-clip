@@ -24,13 +24,16 @@ from x_clip.tokenizer import tokenizer
 
 from dataset import get_wds_dataset
 
-from x_clip import distributed_utils
 
-# Multi-node slurm setup based on: https://gist.github.com/TengdaHan/1dd10d335c7ca6f13810fff41e809904
+# multi-GPU training script based on https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
+
+# Example command to start a training run:
+# TO DO: Add example here!
+
 
 def get_args():
     """Get all parsed arguments."""
-    parser = argparse.ArgumentParser(description="X-CLIP training")
+    parser = argparse.ArgumentParser(description="X-CLIP ddp training")
 
     # general setup
     parser.add_argument("--id", type=str,
@@ -114,15 +117,9 @@ def get_args():
 
     # TO DO: Add option to resume from weight path!
 
-    parser = distributed_utils.wrap_arg_parser(parser)
-
     args = parser.parse_args()
     args.cmd = " ".join("\""+arg+"\"" if " " in arg else arg for arg in sys.argv) # log the exact python command for the run
     return args
-
-
-def get_trainable_params(model):
-    return [params for params in model.parameters() if params.requires_grad]
 
 
 def create_logger(path_log, file_name):
@@ -146,6 +143,17 @@ def create_logger(path_log, file_name):
     return logger
 
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = "localhost"
+    os.environ['MASTER_PORT'] = "12345"
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # TO DO: Check nccl backend with newest PyTorch version (because of the all gather bug in a older version).
+
+
+def cleanup():
+    dist.destroy_process_group()
+
+
 class AverageMeter(object):
     """computes and stores the average and current value."""
     def __init__(self):
@@ -164,7 +172,15 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
+# from https://github.com/rwightman/pytorch-image-models/blob/779107b693010934ac87c8cecbeb65796e218488/timm/utils/distributed.py#L11
+def reduce_tensor(tensor, n):
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= n
+    return rt
+
+
+def train_ddp(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
 
     # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
@@ -180,6 +196,9 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
     logger.info(f"{datetime.now()} rank: {args.rank} model moved to rank {args.rank}")
     ddp_model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
     logger.info(f"{datetime.now()} rank: {args.rank} created ddp model")
+
+    # TO DO: Remove after debugging
+    #ddp_model.register_comm_hook(None, allreduce_sum_hook)
 
     def one_epoch(args, model, optimizer, dl_train, dl_valid, epoch, step):
         time_epoch_start = time.time()
@@ -205,7 +224,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
         for i, b in enumerate(dl_train):
             dt = time.time() - tp
             dt = torch.tensor(dt).to(args.rank)
-            dt = distr_backend.average_all(dt)
+            dt = reduce_tensor(dt, args.world_size)
             data_time.update(dt)
 
             if args.dryrun and (i == args.dryrun):
@@ -243,7 +262,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
                     )
 
             # TO DO: Check if barrier is needed.
-            #dist.barrier()
+            dist.barrier()
             loss.backward()
 
             if args.clip_grad_norm:
@@ -267,9 +286,10 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
             #acc_image = ((sim_image.argmax(1) == labels).float()).mean()
             #acc       = (acc_text + acc_image) / 2
 
-            reduced_loss = distr_backend.average_all(loss)
+            reduced_loss = reduce_tensor(loss.data, args.world_size)
             losses.update(reduced_loss.item())
 
+            #reduced_acc = reduce_tensor(acc.data, args.world_size)
             #accuracies.update(reduced_acc.item())
 
             if args.tb_profiler:
@@ -277,7 +297,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
             bt = time.time() - tp
             bt = torch.tensor(bt).to(args.rank)
-            bt = distr_backend.average_all(bt)
+            bt = reduce_tensor(bt, args.world_size)
             batch_time.update(bt)
 
             if args.rank == 0:
@@ -304,7 +324,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
         time_epoch_end = time.time()
         et = time_epoch_end - time_epoch_start
         et = torch.tensor(et).to(args.rank)
-        epoch_time = distr_backend.average_all(epoch_time)
+        epoch_time = reduce_tensor(et, args.world_size)
 
         if args.rank == 0:
             writer.add_scalars("1 loss/2 epoch", {"train": losses.avg}, epoch)
@@ -332,18 +352,19 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
     logger.info(f"{datetime.now()} rank: {args.rank} ddp cleanup")
 
 
-def trainer():
+def run(func, world_size):
+    mp.spawn(func,
+             args=(world_size,),
+             nprocs=world_size,
+             join=True)
 
-    distr_backend = distributed_utils.set_backend_from_args(args)
-    distr_backend.initialize()
+
+def trainer(rank, world_size):
 
     # get args
     args = get_args()
-    args.world_size = distr_backend.get_world_size()
-    # TO DO: Check if env var is needed for slurm setup
-    #if "WORLD_SIZE" in os.environ:
-    #    args.world_size = int(os.environ["WORLD_SIZE"])
-    args.rank = distr_backend.get_rank() # TO DO: Check if we need for multi-node .get_local_rank()
+    args.rank = rank
+    args.world_size = world_size
     args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
@@ -377,9 +398,18 @@ def trainer():
     # data setup
     logger.info(f"{datetime.now()} rank: {args.rank} data setup")
 
-    # TO DO: Not used for wds, but needs a check if we add additional dataset setups.
-    #is_shuffle = not distributed_utils.using_backend(distributed_utils.HorovodBackend)
-
+#    ds_train = torch.utils.data.TensorDataset(
+#            torch.randn(args.bs*8, args.channels, args.visual_image_size, args.visual_image_size, dtype=torch.float),
+#            torch.randint(0, args.num_text_tokens, (args.bs*8, args.text_seq_len), dtype=torch.long),
+#            ) # TO DO: Add real dataset.
+#    logger.info(f"{datetime.now()} rank: {args.rank} created train dataset")
+#
+#    dl_train = DataLoader(ds_train,
+#                          batch_size = args.bs,
+#                          shuffle = True if not(args.dryrun) else False,
+#                          num_workers = args.numw,
+#                          pin_memory = True,
+#                          drop_last = True)
     dl_train = get_wds_dataset(args, is_train = True, logger=logger)
     #logger.info(f"{datetime.now()} rank: {args.rank} created train dataloader with length {len(dl_train)}")
 
@@ -431,28 +461,16 @@ def trainer():
     logger.info(f"{datetime.now()} rank: {args.rank} created CLIP model")
 
     # optimizer
-    #opt = AdamW(model.parameters(), lr = args.lr)
-    opt = AdamW(get_trainable_params(model), lr=args.lr)
+    opt = AdamW(model.parameters(), lr = args.lr)
     logger.info(f"{datetime.now()} rank: {args.rank} created AdamW optimizer")
 
     # training
-    distr_backend.check_batch_size(args.bs)
-
-    (distr_model, distr_opt, distr_dl, distr_scheduler) = distr_backend.distribute(
-        args=args,
-        model=model,
-        optimizer=opt,
-        model_parameters=get_trainable_params(model),
-        training_data=None,
-        lr_scheduler=None,
-    )
-
     if args.rank == 0: # only use tb writer in rank 0
-        train(args, model=distr_model, optimizer=distr_opt,
+        train_ddp(args, model=model, optimizer=opt,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger, writer=writer)
     else:
-        train(args, model=model, optimizer=opt,
+        train_ddp(args, model=model, optimizer=opt,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger)
 
@@ -460,11 +478,47 @@ def trainer():
 
 
 if __name__ == "__main__":
-#    n_gpus = torch.cuda.device_count()
-#    print(f"#gpus: {n_gpus}")
-##    if n_gpus < 2:
-##        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
-##    else:
-#    run(trainer, n_gpus)
+    n_gpus = torch.cuda.device_count()
+    print(f"#gpus: {n_gpus}")
+#    if n_gpus < 2:
+#        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
+#    else:
+    run(trainer, n_gpus)
 
-    trainer()
+
+# TO DO: Remove after debugging.
+# Sum allgather based on:
+# https://pytorch.org/docs/stable/ddp_comm_hooks.html
+# https://pytorch.org/docs/stable/_modules/torch/distributed/algorithms/ddp_comm_hooks/default_hooks.html#allreduce_hook
+def _allreduce_sum_fut(
+    process_group: dist.ProcessGroup, tensor: torch.Tensor
+) -> torch.futures.Future[torch.Tensor]:
+    "Averages the input gradient tensor by allreduce and returns a future."
+    group_to_use = process_group if process_group is not None else dist.group.WORLD
+
+    # Apply the division first to avoid overflow, especially for FP16.
+    #tensor.div_(group_to_use.size()) # disabled to get sum
+
+    return (
+        dist.all_reduce(tensor, group=group_to_use, async_op=True)
+        .get_future()
+        .then(lambda fut: fut.value()[0])
+    )
+
+
+def allreduce_sum_hook(
+    process_group: dist.ProcessGroup, bucket: dist.GradBucket
+) -> torch.futures.Future[torch.Tensor]:
+    """
+    This DDP communication hook just calls ``allreduce`` using ``GradBucket``
+    tensors. Once gradient tensors are aggregated across all workers, its ``then``
+    callback takes the mean and returns the result. If user registers this hook,
+    DDP results is expected to be same as the case where no hook was registered.
+    Hence, this won't change behavior of DDP and user can use this as a reference
+    or modify this hook to log useful information or any other purposes while
+    unaffecting DDP behavior.
+
+    Example::
+        >>> ddp_model.register_comm_hook(process_group, allreduce_sum_hook)
+    """
+    return _allreduce_sum_fut(process_group, bucket.buffer())
