@@ -24,17 +24,13 @@ class PyTorchDDPBackend(DistributedBackend):
 
         # get environment variable
         self.world_size = int(os.getenv("SLURM_NTASKS"))
-        self.rank = int(os.getenv("SLURM_PROCID"))
+        self.rank       = int(os.getenv("SLURM_PROCID"))
         self.local_rank = int(os.getenv("SLURM_LOCALID"))
-        print(f"init: self.world_size: {self.world_size}, self.rank: {self.rank}, self.local_rank: {self.local_rank}")
-        #self.device = torch.device('cuda', self.local_rank)
-        #self.device = torch.device(self.local_rank)
-        #print(f"init: self.world_size: {self.world_size}, self.rank: {self.rank}, self.local_rank: {self.local_rank}, self.device: {self.device}")
 
         # initialize the process group
         self.backend_module.init_process_group(backend="nccl", rank=self.local_rank, world_size=self.world_size)
 
-        # TO DO: Check if we can remove that from the training loop and keep it here?
+        # TO DO: Check if we can remove that from the training loop and put it here?
         #if torch.cuda.is_available():
         #    torch.cuda.set_device(self.device)
         #    torch.cuda.set_device(self.local_rank)
@@ -61,23 +57,29 @@ class PyTorchDDPBackend(DistributedBackend):
             _model_parameters=None,
             training_data=None,
             lr_scheduler=None,
+            find_unused_parameters=True, # TO DO: Check why this is needed?
             **_kwargs,
     ):
         # TO DO: Horovod setup uses self.ROOT_RANK, investigate why and if we need that setup here.
         #model.to(self.device)
-        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.local_rank])
+        ddp_model = torch.nn.parallel.DistributedDataParallel(model,
+                device_ids=[self.local_rank],
+                find_unused_parameters=find_unused_parameters)
 
-        # Based on: https://discuss.pytorch.org/t/delete-parameter-group-from-optimizer/46814/8
-        # Remove parameters and add new parameter group after model is wrapped in DDP.
-        optimizer.param_group.clear() # optimizer.param_group = []
-        optimizer.state.clear() # optimizer.state = defaultdict(dict)
-        optimizer.add_param_group(
-                {'params' : [p for p in ddp_model.parameters()]}
-                )
+        # TO DO: Check if we need that at all?!
+#        # Based on: https://discuss.pytorch.org/t/delete-parameter-group-from-optimizer/46814/8
+#        # Remove parameters and add new parameter group after model is wrapped in DDP.
+#        optimizer.param_group.clear() # optimizer.param_group = []
+#        optimizer.state.clear() # optimizer.state = defaultdict(dict)
+#        optimizer.add_param_group(
+#                {'params' : [p for p in ddp_model.parameters()]}
+#                )
 
         return (ddp_model, optimizer, training_data, lr_scheduler)
 
     def _average_all(self, tensor):
+        rt = tensor.clone()
         # Reduce op is average by default
-        averaged = self.backend_module.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, async_op=False) / self.get_world_size()
-        return averaged
+        self.backend_module.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, async_op=False)
+        rt /= self.get_world_size()
+        return rt

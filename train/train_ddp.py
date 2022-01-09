@@ -162,24 +162,23 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
+def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
 
     # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
     torch.cuda.set_device(args.device)
+    #print(f"{datetime.now()} rank: {args.rank} args.device: {args.device}")
     torch.cuda.empty_cache()
 
     step = 0
 
     logger.info(f"{datetime.now()} rank: {args.rank} world_size: {args.world_size}")
     #setup(args.rank, args.world_size)
-    logger.info(f"{datetime.now()} rank: {args.local_rank} ddp setup")
+    logger.info(f"{datetime.now()} rank: {args.rank} ddp setup")
     model.to(args.local_rank)
     logger.info(f"{datetime.now()} rank: {args.rank} model moved to local_rank {args.local_rank}")
-    ddp_model = DDP(model, device_ids=[args.local_rank], find_unused_parameters=True)
-    logger.info(f"{datetime.now()} rank: {args.rank} created ddp model")
 
-    def one_epoch(args, model, optimizer, dl_train, dl_valid, epoch, step):
+    def one_epoch(args, distr_backend, model, optimizer, dl_train, dl_valid, epoch, step):
         time_epoch_start = time.time()
 
         batch_time = AverageMeter()
@@ -324,7 +323,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
     for epoch in range(args.epochs):
         # TO DO: Check this setup for the webdataset setup.
         os.environ["WDS_EPOCH"] = str(epoch)
-        ddp_model, optimizer, step = one_epoch(args, ddp_model, optimizer, dl_train, dl_valid, epoch, step)
+        model, optimizer, step = one_epoch(args, distr_backend, model, optimizer, dl_train, dl_valid, epoch, step)
 
     cleanup()
     logger.info(f"{datetime.now()} rank: {args.rank} ddp cleanup")
@@ -332,24 +331,21 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
 def trainer():
 
-    print('SLURM_NTASKS (=WORLD_SIZE):', os.getenv('SLURM_NTASKS'))
-    print('SLURM_PROCID (=RANK):', os.getenv('SLURM_PROCID'))
-    print('SLURM_LOCALID (=LOCAL_RANK):', os.getenv('SLURM_LOCALID'))
-    #print(int(os.environ["RANK"]), int(os.environ["LOCAL_RANK"]), int(os.environ["WORLD_SIZE"]))
-    #print(int(os.getenv("RANK")), int(os.getenv("LOCAL_RANK")), int(os.getenv("WORLD_SIZE")))
-    #print(torch.distributed.get_rank(), torch.cuda.device_count())
+    # print slurm setup for debugging
+    print(f"{datetime.now()} rank: {args.rank} SLURM_NTASKS (=WORLD_SIZE): {os.getenv('SLURM_NTASKS')}")
+    print(f"{datetime.now()} rank: {args.rank} SLURM_PROCID (=RANK):', os.getenv('SLURM_PROCID')}")
+    print(f"{datetime.now()} rank: {args.rank} SLURM_LOCALID (=LOCAL_RANK):', os.getenv('SLURM_LOCALID')}")
+
     # get args
     args = get_args()
     distr_backend = distributed_utils.set_backend_from_args(args)
-    print(distr_backend)
     distr_backend.initialize()
-    print(f"distr_backend.is_initialized: {distr_backend.is_initialized}")
-    print(distr_backend)
+    print(f"{datetime.now()} rank: {args.rank} distributed backend is initialized: {distr_backend.is_initialized}")
+
     args.world_size = distr_backend.get_world_size()
     args.rank = distr_backend.get_rank()
     args.local_rank = distr_backend.get_local_rank()
-    #args.device = torch.device("cuda", args.local_rank) # TO DO: Reuse from distr_backend?
-    args.device = torch.device(args.local_rank) # TO DO: Reuse from distr_backend?
+    args.device = args.local_rank
     args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
@@ -454,11 +450,11 @@ def trainer():
     )
 
     if args.rank == 0: # only use tb writer in rank 0
-        train(args, model=distr_model, optimizer=distr_opt,
+        train(args, distr_backend=distr_backend, model=distr_model, optimizer=distr_opt,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger, writer=writer)
     else:
-        train(args, model=model, optimizer=opt,
+        train(args, distr_backend=distr_backend, model=distr_model, optimizer=distr_opt,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger)
 
@@ -466,11 +462,6 @@ def trainer():
 
 
 if __name__ == "__main__":
-    n_gpus = torch.cuda.device_count()
-    print(f"#gpus: {n_gpus}")
-##    if n_gpus < 2:
-##        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
-##    else:
-#    run(trainer, n_gpus)
-
+    #n_gpus = torch.cuda.device_count()
+    #print(f"#gpus: {n_gpus}")
     trainer()

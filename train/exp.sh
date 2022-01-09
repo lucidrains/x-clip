@@ -38,6 +38,8 @@ echo "MASTER_ADDR="$MASTER_ADDR
 export MASTER_PORT=12370
 echo "MASTER_PORT="$MASTER_PORT
 
+export CUDA_VISIBLE_DEVICES=0,1
+
 eval "$(/p/project/ccstdl/pieler1/miniconda3/bin/conda shell.bash hook)" # init conda
 conda activate pytorch1.10
 cd /p/project/ccstdl/pieler1/x-clip
@@ -48,7 +50,7 @@ srun python -u train/train_ddp.py \
 --save-interval-step 10000 \
 --bs 64 \
 --lr 1e-4 \
---numw 24 \
+--numw 8 \
 --seed 42 \
 --loss-over-ranks \
 --distributed_backend "PyTorch DDP" \
