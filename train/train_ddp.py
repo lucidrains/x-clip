@@ -166,17 +166,17 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
     # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
-    torch.cuda.set_device(args.rank)
+    torch.cuda.set_device(args.device)
     torch.cuda.empty_cache()
 
     step = 0
 
     logger.info(f"{datetime.now()} rank: {args.rank} world_size: {args.world_size}")
     #setup(args.rank, args.world_size)
-    logger.info(f"{datetime.now()} rank: {args.rank} ddp setup")
-    model.to(args.rank)
-    logger.info(f"{datetime.now()} rank: {args.rank} model moved to rank {args.rank}")
-    ddp_model = DDP(model, device_ids=[args.rank], find_unused_parameters=True)
+    logger.info(f"{datetime.now()} rank: {args.local_rank} ddp setup")
+    model.to(args.local_rank)
+    logger.info(f"{datetime.now()} rank: {args.rank} model moved to local_rank {args.local_rank}")
+    ddp_model = DDP(model, device_ids=[args.local_rank], find_unused_parameters=True)
     logger.info(f"{datetime.now()} rank: {args.rank} created ddp model")
 
     def one_epoch(args, model, optimizer, dl_train, dl_valid, epoch, step):
@@ -202,7 +202,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
         tp = time.time()
         for i, b in enumerate(dl_train):
             dt = time.time() - tp
-            dt = torch.tensor(dt).to(args.rank)
+            dt = torch.tensor(dt).to(args.local_rank)
             dt = distr_backend.average_all(dt)
             data_time.update(dt)
 
@@ -225,11 +225,11 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
             #text, text_mask, image = b
             image, text = b
 
-            text      = text.squeeze(1).to(args.rank)
-            #text_mask = text_mask.to(args.rank) # TO DO: Add masking to dataset
-            #text_mask = torch.ones_like(text, device = args.rank, dtype = bool)
+            text      = text.squeeze(1).to(args.local_rank)
+            #text_mask = text_mask.to(args.local_rank) # TO DO: Add masking to dataset
+            #text_mask = torch.ones_like(text, device = args.local_rank, dtype = bool)
             text_mask = None
-            image     = image.to(args.rank)
+            image     = image.to(args.local_rank)
 
             loss = model(
                     text,
@@ -274,7 +274,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
                 prof.step()
 
             bt = time.time() - tp
-            bt = torch.tensor(bt).to(args.rank)
+            bt = torch.tensor(bt).to(args.local_rank)
             bt = distr_backend.average_all(bt)
             batch_time.update(bt)
 
@@ -301,7 +301,7 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
         time_epoch_end = time.time()
         et = time_epoch_end - time_epoch_start
-        et = torch.tensor(et).to(args.rank)
+        et = torch.tensor(et).to(args.local_rank)
         epoch_time = distr_backend.average_all(epoch_time)
 
         if args.rank == 0:
@@ -332,17 +332,24 @@ def train(args, model, optimizer, dl_train, dl_valid, epochs, logger=None, write
 
 def trainer():
 
+    print('SLURM_NTASKS (=WORLD_SIZE):', os.getenv('SLURM_NTASKS'))
+    print('SLURM_PROCID (=RANK):', os.getenv('SLURM_PROCID'))
+    print('SLURM_LOCALID (=LOCAL_RANK):', os.getenv('SLURM_LOCALID'))
+    #print(int(os.environ["RANK"]), int(os.environ["LOCAL_RANK"]), int(os.environ["WORLD_SIZE"]))
+    #print(int(os.getenv("RANK")), int(os.getenv("LOCAL_RANK")), int(os.getenv("WORLD_SIZE")))
+    #print(torch.distributed.get_rank(), torch.cuda.device_count())
     # get args
     args = get_args()
     distr_backend = distributed_utils.set_backend_from_args(args)
     print(distr_backend)
     distr_backend.initialize()
+    print(f"distr_backend.is_initialized: {distr_backend.is_initialized}")
     print(distr_backend)
     args.world_size = distr_backend.get_world_size()
-    # TO DO: Check if env var is needed for slurm setup
-    #if "WORLD_SIZE" in os.environ:
-    #    args.world_size = int(os.environ["WORLD_SIZE"])
-    args.rank = distr_backend.get_rank() # TO DO: Check if we need for multi-node .get_local_rank()
+    args.rank = distr_backend.get_rank()
+    args.local_rank = distr_backend.get_local_rank()
+    #args.device = torch.device("cuda", args.local_rank) # TO DO: Reuse from distr_backend?
+    args.device = torch.device(args.local_rank) # TO DO: Reuse from distr_backend?
     args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
@@ -434,6 +441,7 @@ def trainer():
     logger.info(f"{datetime.now()} rank: {args.rank} created AdamW optimizer")
 
     # training
+    model.to(args.device)
     distr_backend.check_batch_size(args.bs)
 
     (distr_model, distr_opt, distr_dl, distr_scheduler) = distr_backend.distribute(
@@ -458,8 +466,8 @@ def trainer():
 
 
 if __name__ == "__main__":
-#    n_gpus = torch.cuda.device_count()
-#    print(f"#gpus: {n_gpus}")
+    n_gpus = torch.cuda.device_count()
+    print(f"#gpus: {n_gpus}")
 ##    if n_gpus < 2:
 ##        print(f"Requires at least 2 GPUs to run, but got {n_gpus}.")
 ##    else:

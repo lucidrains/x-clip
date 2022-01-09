@@ -1,3 +1,4 @@
+import os
 import torch
 
 from .distributed_backend import DistributedBackend
@@ -20,28 +21,34 @@ class PyTorchDDPBackend(DistributedBackend):
     def _initialize(self):
 
         assert self.backend_module.is_available(), "PyTorch DDP backend is not available."
-        
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
+
+        # get environment variable
+        self.world_size = int(os.getenv("SLURM_NTASKS"))
+        self.rank = int(os.getenv("SLURM_PROCID"))
+        self.local_rank = int(os.getenv("SLURM_LOCALID"))
+        print(f"init: self.world_size: {self.world_size}, self.rank: {self.rank}, self.local_rank: {self.local_rank}")
+        #self.device = torch.device('cuda', self.local_rank)
+        #self.device = torch.device(self.local_rank)
+        #print(f"init: self.world_size: {self.world_size}, self.rank: {self.rank}, self.local_rank: {self.local_rank}, self.device: {self.device}")
 
         # initialize the process group
-        self.backend_module.init_process_group("nccl", rank=self.get_local_rank, world_size=self.get_world_size)
+        self.backend_module.init_process_group(backend="nccl", rank=self.local_rank, world_size=self.world_size)
 
-        if torch.cuda.is_available():
-            torch.cuda.set_device(self.get_local_rank())
+        # TO DO: Check if we can remove that from the training loop and keep it here?
+        #if torch.cuda.is_available():
+        #    torch.cuda.set_device(self.device)
+        #    torch.cuda.set_device(self.local_rank)
 
         assert self.backend_module.is_initialized(), "PyTorch DDP backend is not initialized."
 
     def _get_world_size(self):
-        return self.backend_module.get_world_size()
+        return self.world_size
 
     def _get_rank(self):
-        return self.backend_module.get_rank()
+        return self.rank
 
     def _get_local_rank(self):
-        #return self.backend_module.local_rank()
-        # TO DO: Check how local vs global ranks is handled with PyTorch DDP. In the meantime wie return self.get_rank
-        return self.get_rank() # == return self.backend_module.get_rank()
+        return self.local_rank
 
     def _local_barrier(self):
         self.backend_module.barrier()
@@ -57,8 +64,8 @@ class PyTorchDDPBackend(DistributedBackend):
             **_kwargs,
     ):
         # TO DO: Horovod setup uses self.ROOT_RANK, investigate why and if we need that setup here.
-        model.to(self.get_local_rank())
-        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.get_local_rank()])
+        #model.to(self.device)
+        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[self.local_rank])
 
         # Based on: https://discuss.pytorch.org/t/delete-parameter-group-from-optimizer/46814/8
         # Remove parameters and add new parameter group after model is wrapped in DDP.
