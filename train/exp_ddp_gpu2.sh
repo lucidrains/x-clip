@@ -8,9 +8,9 @@
 #SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
-#SBATCH --job-name=exp1
+#SBATCH --job-name=gpu2
 ###SBATCH --partition=gpu
-#SBATCH --time=00:15:00
+#SBATCH --time=00:45:00
 
 ### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
 ### Note: --gres=gpu:x should equal to ntasks-per-node
@@ -39,14 +39,14 @@ echo "MASTER_ADDR="$MASTER_ADDR
 export MASTER_PORT=12370
 echo "MASTER_PORT="$MASTER_PORT
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 eval "$(/p/project/ccstdl/pieler1/miniconda3/bin/conda shell.bash hook)" # init conda
 conda activate pytorch1.10
 cd /p/project/ccstdl/pieler1/x-clip
 export PYTHONPATH="$PYTHONPATH:$PWD/src"
 srun python -u train/train_ddp.py \
---id "test_ddp/exp2" \
+--id "test_scaling_gpus_b/gpu2" \
 --path-data-train "/p/scratch/ccstdl/gordon2/CC3M/train/{00000..03318}.tar" \
 --save-interval-step 10000 \
 --bs 64 \

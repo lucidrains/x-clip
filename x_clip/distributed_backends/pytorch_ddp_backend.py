@@ -24,16 +24,21 @@ class PyTorchDDPBackend(DistributedBackend):
 
         # get environment variable
         self.world_size = int(os.getenv("SLURM_NTASKS"))
+        #self.world_size = int(os.getenv("WORLD_SIZE"))
         self.rank       = int(os.getenv("SLURM_PROCID"))
+        #self.rank       = int(os.getenv("RANK"))
         self.local_rank = int(os.getenv("SLURM_LOCALID"))
+        #self.local_rank = int(os.getenv("LOCAL_RANK"))
+        print(f"self.world_size {self.world_size}, self.rank {self.rank}, self.local_rank {self.local_rank}")
 
         # initialize the process group
         self.backend_module.init_process_group(backend="nccl", rank=self.local_rank, world_size=self.world_size)
 
         # TO DO: Check if we can remove that from the training loop and put it here?
-        #if torch.cuda.is_available():
+        if torch.cuda.is_available():
         #    torch.cuda.set_device(self.device)
-        #    torch.cuda.set_device(self.local_rank)
+            torch.cuda.set_device(self.local_rank)
+            torch.cuda.empty_cache()
 
         assert self.backend_module.is_initialized(), "PyTorch DDP backend is not initialized."
 
@@ -61,6 +66,7 @@ class PyTorchDDPBackend(DistributedBackend):
             **_kwargs,
     ):
         # TO DO: Horovod setup uses self.ROOT_RANK, investigate why and if we need that setup here.
+        model.to(self.local_rank)
         #model.to(self.device)
         ddp_model = torch.nn.parallel.DistributedDataParallel(model,
                 device_ids=[self.local_rank],
@@ -80,6 +86,7 @@ class PyTorchDDPBackend(DistributedBackend):
     def _average_all(self, tensor):
         rt = tensor.clone()
         # Reduce op is average by default
-        self.backend_module.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, async_op=False)
+        torch.distributed.all_reduce(rt, op=torch.distributed.ReduceOp.SUM, async_op=False)
+        print(f"rt {rt}, self.get_world_size() {self.get_world_size()}")
         rt /= self.get_world_size()
         return rt

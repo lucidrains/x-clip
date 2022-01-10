@@ -166,9 +166,9 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 
     # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
-    torch.cuda.set_device(args.device)
+    #torch.cuda.set_device(args.device)
     #print(f"{datetime.now()} rank: {args.rank} args.device: {args.device}")
-    torch.cuda.empty_cache()
+    #torch.cuda.empty_cache()
 
     step = 0
 
@@ -229,6 +229,7 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
             #text_mask = torch.ones_like(text, device = args.local_rank, dtype = bool)
             text_mask = None
             image     = image.to(args.local_rank)
+            logger.info(f"{datetime.now()} rank: {args.rank} text.shape: {text.shape}, image.shape: {image.shape}")
 
             loss = model(
                     text,
@@ -266,6 +267,8 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 
             reduced_loss = distr_backend.average_all(loss)
             losses.update(reduced_loss.item())
+            print(f"reduced_loss {reduced_loss}")
+            print(f"losses.avg {losses.avg}")
 
             #accuracies.update(reduced_acc.item())
 
@@ -284,9 +287,9 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
                 writer.add_scalars("5 timings/1 step", {"dt": dt, "bt": bt}, step)
                 if (step % args.save_interval_step == 0) and (step != 0):
                     path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_step{step:08d}.pt")
-                    torch.save(ddp_model.module.state_dict(), path_save)
+                    torch.save(model.module.state_dict(), path_save)
                     #logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
-                    logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f}")
+                    logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {bt:<10.3f}dt: {dt:<10.3f}{'train':<10} loss: {reduced_loss:<10.3f}")
 
             #if (step % args.save_interval_step == 0) and (step != 0):
                 # TO DO: Add validation loop.
@@ -332,20 +335,20 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 def trainer():
 
     # print slurm setup for debugging
-    print(f"{datetime.now()} rank: {args.rank} SLURM_NTASKS (=WORLD_SIZE): {os.getenv('SLURM_NTASKS')}")
-    print(f"{datetime.now()} rank: {args.rank} SLURM_PROCID (=RANK):', os.getenv('SLURM_PROCID')}")
-    print(f"{datetime.now()} rank: {args.rank} SLURM_LOCALID (=LOCAL_RANK):', os.getenv('SLURM_LOCALID')}")
+    print(f"{datetime.now()} SLURM_NTASKS (=WORLD_SIZE): {os.getenv('SLURM_NTASKS')}")
+    print(f"{datetime.now()} SLURM_PROCID (=RANK): {os.getenv('SLURM_PROCID')}")
+    print(f"{datetime.now()} SLURM_LOCALID (=LOCAL_RANK): {os.getenv('SLURM_LOCALID')}")
 
     # get args
     args = get_args()
     distr_backend = distributed_utils.set_backend_from_args(args)
     distr_backend.initialize()
-    print(f"{datetime.now()} rank: {args.rank} distributed backend is initialized: {distr_backend.is_initialized}")
+    print(f"{datetime.now()} distributed backend is initialized: {distr_backend.is_initialized}")
 
-    args.world_size = distr_backend.get_world_size()
-    args.rank = distr_backend.get_rank()
-    args.local_rank = distr_backend.get_local_rank()
-    args.device = args.local_rank
+    args.world_size      = distr_backend.get_world_size()
+    args.rank            = distr_backend.get_rank()
+    args.local_rank      = distr_backend.get_local_rank()
+    args.device          = distr_backend.get_local_rank()
     args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
@@ -437,7 +440,7 @@ def trainer():
     logger.info(f"{datetime.now()} rank: {args.rank} created AdamW optimizer")
 
     # training
-    model.to(args.device)
+    #model.to(args.device)
     distr_backend.check_batch_size(args.bs)
 
     (distr_model, distr_opt, distr_dl, distr_scheduler) = distr_backend.distribute(
