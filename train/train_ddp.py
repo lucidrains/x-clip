@@ -164,19 +164,12 @@ class AverageMeter(object):
 
 def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
 
-    # Based on: https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     # TO DO: Check if still needed with latest PyTorch version.
     #torch.cuda.set_device(args.device)
-    #print(f"{datetime.now()} rank: {args.rank} args.device: {args.device}")
+    # https://discuss.pytorch.org/t/extra-10gb-memory-on-gpu-0-in-ddp-tutorial/118113
     #torch.cuda.empty_cache()
 
     step = 0
-
-    logger.info(f"{datetime.now()} rank: {args.rank} world_size: {args.world_size}")
-    #setup(args.rank, args.world_size)
-    logger.info(f"{datetime.now()} rank: {args.rank} ddp setup")
-    model.to(args.local_rank)
-    logger.info(f"{datetime.now()} rank: {args.rank} model moved to local_rank {args.local_rank}")
 
     def one_epoch(args, distr_backend, model, optimizer, dl_train, dl_valid, epoch, step):
         time_epoch_start = time.time()
@@ -216,11 +209,11 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
                 continue
 
             optimizer.zero_grad()
-            # Faster option:
+            # TO DO: Check faster option:
             #for param in model.parameters():
             #    param.grad = None
 
-            # TO DO: Adapt to text_mask from dataloader
+            # TO DO: Adapt to text_mask from dataloader.
             #text, text_mask, image = b
             image, text = b
 
@@ -229,7 +222,6 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
             #text_mask = torch.ones_like(text, device = args.local_rank, dtype = bool)
             text_mask = None
             image     = image.to(args.local_rank)
-            logger.info(f"{datetime.now()} rank: {args.rank} text.shape: {text.shape}, image.shape: {image.shape}")
 
             loss = model(
                     text,
@@ -254,7 +246,7 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
                     if p.grad is not None:
                         param_norm = torch.linalg.norm(p.grad.data)
                         total_norm += param_norm.item()
-                writer.add_scalars("3 grad/1 gradient L2 norm", {"data train": total_norm}, step)
+                writer.add_scalars("3 grad/1 gradient norm", {"data train": total_norm}, step)
 
             optimizer.step()
 
@@ -267,9 +259,8 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 
             reduced_loss = distr_backend.average_all(loss)
             losses.update(reduced_loss.item())
-            print(f"reduced_loss {reduced_loss}")
-            print(f"losses.avg {losses.avg}")
 
+            #reduced_acc = distr_backend.average_all(acc)
             #accuracies.update(reduced_acc.item())
 
             if args.tb_profiler:
@@ -288,8 +279,8 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
                 if (step % args.save_interval_step == 0) and (step != 0):
                     path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_step{step:08d}.pt")
                     torch.save(model.module.state_dict(), path_save)
-                    #logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
                     logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {bt:<10.3f}dt: {dt:<10.3f}{'train':<10} loss: {reduced_loss:<10.3f}")
+                    #logger.info(f"{datetime.now()} epoch: {epoch:>4} step: {step:>8} bt: {bt:<10.3f}dt: {dt:<10.3f}{'train':<10} loss: {reduced_loss:<10.3f} acc: {reduced_acc:<10.3f}")
 
             #if (step % args.save_interval_step == 0) and (step != 0):
                 # TO DO: Add validation loop.
@@ -314,8 +305,8 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
             if epoch % args.save_interval_epoch == 0:
                 path_save = os.path.join(args.path_model, f"{'_'.join(str(datetime.now()).split('.')[0].split(' '))}_epoch{epoch:03d}.pt")
                 torch.save(ddp_model.module.state_dict(), path_save)
-                #logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
                 logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f}")
+                #logger.info(f"{datetime.now()} epoch: {epoch:>4} et: {epoch_time:<11.3f}bt: {batch_time.avg:<10.3f}dt: {data_time.avg:<10.3f}{'train':<10} loss: {losses.avg:<10.3f} acc: {accuracies.avg:<10.3f}")
 
         #if epoch % args.save_interval_epoch == 0:
             # TO DO: Add validation loop.
@@ -334,21 +325,16 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 
 def trainer():
 
-    # print slurm setup for debugging
-    print(f"{datetime.now()} SLURM_NTASKS (=WORLD_SIZE): {os.getenv('SLURM_NTASKS')}")
-    print(f"{datetime.now()} SLURM_PROCID (=RANK): {os.getenv('SLURM_PROCID')}")
-    print(f"{datetime.now()} SLURM_LOCALID (=LOCAL_RANK): {os.getenv('SLURM_LOCALID')}")
-
     # get args
     args = get_args()
     distr_backend = distributed_utils.set_backend_from_args(args)
     distr_backend.initialize()
-    print(f"{datetime.now()} distributed backend is initialized: {distr_backend.is_initialized}")
+    print(f"{datetime.now()} distributed backend is initialized!")
 
-    args.world_size      = distr_backend.get_world_size()
-    args.rank            = distr_backend.get_rank()
-    args.local_rank      = distr_backend.get_local_rank()
-    args.device          = distr_backend.get_local_rank()
+    args.world_size = distr_backend.get_world_size()
+    args.rank = distr_backend.get_rank()
+    args.local_rank = distr_backend.get_local_rank()
+    args.device = distr_backend.get_local_rank()
     args.num_text_tokens = tokenizer.vocab_size
     
     # setup paths
@@ -367,7 +353,7 @@ def trainer():
 
     # setup loggers
     # TO DO: Revisit file name when processes are more than 1 min apart.
-    # (We want to log the setup from every rank to be able to debug all ranks.)
+    # Currently, we want to log the setup from every rank to be able to debug all ranks.
     fn_log = f"train_{'_'.join(str(datetime.now()).split('.')[0].split(' '))}.log"
     logger = create_logger(args.path_log, file_name=fn_log)
     logger.info(f"{datetime.now()} rank: {args.rank} start logging")
@@ -375,7 +361,7 @@ def trainer():
         writer = SummaryWriter(log_dir=args.path_tb, flush_secs=2)
 
     if args.rank == 0:
-        # print and log args
+        # log args
         for k in args.__dict__.keys():
             logger.info(f"{k:>30}: {args.__dict__[k]}")
 
@@ -436,14 +422,13 @@ def trainer():
 
     # optimizer
     #opt = AdamW(model.parameters(), lr = args.lr)
-    opt = AdamW(get_trainable_params(model), lr=args.lr)
+    opt = AdamW(get_trainable_params(model), lr=args.lr) # DALLE-pytorch setup
     logger.info(f"{datetime.now()} rank: {args.rank} created AdamW optimizer")
 
     # training
-    #model.to(args.device)
     distr_backend.check_batch_size(args.bs)
 
-    (distr_model, distr_opt, distr_dl, distr_scheduler) = distr_backend.distribute(
+    distr_model, distr_opt, distr_dl, distr_scheduler = distr_backend.distribute(
         args=args,
         model=model,
         optimizer=opt,
@@ -465,6 +450,4 @@ def trainer():
 
 
 if __name__ == "__main__":
-    #n_gpus = torch.cuda.device_count()
-    #print(f"#gpus: {n_gpus}")
     trainer()

@@ -1,3 +1,4 @@
+import os
 import math
 import copy
 from contextlib import contextmanager
@@ -425,44 +426,33 @@ class CLIP(nn.Module):
         # contrastive loss
 
         if self.loss_over_ranks:
-            all_text_latents  = [torch.zeros_like(text_latents)  for _ in range(dist.get_world_size())]
-            all_image_latents = [torch.zeros_like(image_latents) for _ in range(dist.get_world_size())]
+#            all_text_latents  = [torch.zeros_like(text_latents)  for _ in range(dist.get_world_size())]
+#            all_image_latents = [torch.zeros_like(image_latents) for _ in range(dist.get_world_size())]
 
-            dist.all_gather(all_text_latents, text_latents)
-            dist.all_gather(all_image_latents, image_latents)
-
-            #all_text_latents  = torch.cat(all_text_latents, dim=0)
-            #all_image_latents = torch.cat(all_image_latents, dim=0)
-
-            #all_text_latents_ag  = [torch.zeros_like(text_latents)  for _ in range(dist.get_world_size())]
-            #all_image_latents_ag = [torch.zeros_like(image_latents) for _ in range(dist.get_world_size())]
-
-            #all_gather(all_text_latents, text_latents)
-            #all_gather(all_image_latents, image_latents)
-            #all_text_latents_ag  = all_gather2(all_text_latents_ag, text_latents)
-            #all_image_latents_ag = all_gather2(all_image_latents_ag, image_latents)
-
-            #all_text_latents  = all_gather3(text_latents)
-            #all_image_latents = all_gather3(image_latents)
-
+#            dist.all_gather(all_text_latents, text_latents)
+#            dist.all_gather(all_image_latents, image_latents)
 
             # Based on: https://github.com/mlfoundations/open_clip/blob/main/src/training/train.py#L40
             # use all latents with current samples incorporated
-            rank = dist.get_rank()
-            cat_all_image_latents = torch.cat(
-                [image_latents]
-                + all_image_latents[:rank]
-                + all_image_latents[rank + 1 :]
-            )
-            cat_all_text_latents = torch.cat(
-                [text_latents]
-                + all_text_latents[:rank]
-                + all_text_latents[rank + 1 :]
-            )
-            print(f"text_latents: {text_latents.shape}, cat_all_text_latents: {cat_all_text_latents.shape}")
-            print(f"image_latents: {image_latents.shape}, cat_all_image_latents: {cat_all_image_latents.shape}")
+#            rank = dist.get_rank()
+#            cat_all_image_latents = torch.cat(
+#                [image_latents]
+#                + all_image_latents[:rank]
+#                + all_image_latents[rank + 1 :]
+#            )
+#            cat_all_text_latents = torch.cat(
+#                [text_latents]
+#                + all_text_latents[:rank]
+#                + all_text_latents[rank + 1 :]
+#            )
 
-            # TO DO: Check all gather order to verification, as there was once a bug in it!
+            # use only local samples for loss
+            #all_text_latents  = torch.cat(all_text_latents, dim=0)
+            #all_image_latents = torch.cat(all_image_latents, dim=0)
+
+            # all gather grads
+            all_text_latents  = all_gather(text_latents)
+            all_image_latents = all_gather(image_latents)
 
         if self.use_all_token_embeds:
             # fine-grained CLIP logic
@@ -503,14 +493,12 @@ class CLIP(nn.Module):
                     image_to_text = reduce(reduce(sim_image_to_text, 'x y t i -> x y i', 'max'), 'x y i -> y x', 'mean')
         else:
             if self.loss_over_ranks:
-                #text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
-                #image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
+                text_to_image = einsum('x d, y d -> x y', text_latents, all_image_latents) * temp
+                image_to_text = einsum('y d, x d -> y x', image_latents, all_text_latents) * temp
 
-                # use all latents open_clip style
-                text_to_image = einsum('x d, y d -> x y', cat_all_text_latents, cat_all_image_latents) * temp
-                #image_to_text = einsum('y d, x d -> y x', cat_all_image_latents, cat_all_text_latents) * temp
-                image_to_text = text_to_image.t()
-                # TO DO: Can be setup for all latents like in the also to only calculate similarites once.
+#                # use all latents open_clip style
+#                text_to_image = einsum('x d, y d -> x y', cat_all_text_latents, cat_all_image_latents) * temp
+#                image_to_text = text_to_image.t()
             else:
                 text_to_image = einsum('x d, y d -> x y', text_latents, image_latents) * temp
                 image_to_text = text_to_image.t()
@@ -527,11 +515,12 @@ class CLIP(nn.Module):
 
         # numerators
         if self.loss_over_ranks:
-            rank = dist.get_rank()
-            #pos_diag = rank * b # the positive diagonal for the rank is at position rank * b
+            # TO DO: The rank needs to be handed over to the x_clip instance at init!
+            rank = int(os.getenv("SLURM_PROCID"))
+            pos_diag = rank * b # the positive diagonal for the rank is at position rank * b
 
-            # use all latents open_clip style
-            pos_diag = 0
+#            # use all latents open_clip style
+#            pos_diag = 0
         else:
             pos_diag = 0
 
@@ -560,11 +549,7 @@ class CLIP(nn.Module):
         text_to_image_loss = -torch.log(text_to_image_pos / text_to_image_denom).mean()
         image_to_text_loss = -torch.log(image_to_text_pos / image_to_text_denom).mean()
 
-        print(f"text_to_image_exp: {text_to_image_exp.shape}, text_to_image_pos {text_to_image_pos.shape}, text_to_image_denom: {text_to_image_denom.shape}, text_to_image_loss: {text_to_image_loss}")
-        print(f"image_to_text_exp: {image_to_text_exp.shape}, image_to_text_pos {image_to_text_pos.shape}, image_to_text_denom: {image_to_text_denom.shape}, image_to_text_loss: {image_to_text_loss}")
-
         cl_loss = (text_to_image_loss + image_to_text_loss) / 2
-        print(f"cl_loss: {cl_loss}")
 
         return cl_loss
 
@@ -611,27 +596,27 @@ class CLIP(nn.Module):
 
 
 # From: https://github.com/Spijkervet/SimCLR/blob/master/simclr/modules/gather.py
-class GatherLayer(torch.autograd.Function):
-    """Gather tensors from all process, supporting backward propagation."""
+#class GatherLayer(torch.autograd.Function):
+#    """Gather tensors from all process, supporting backward propagation."""
+#
+#    @staticmethod
+#    def forward(ctx, input):
+#        ctx.save_for_backward(input)
+#        output = [torch.zeros_like(input) for _ in range(dist.get_world_size())]
+#        dist.all_gather(output, input)
+#        return tuple(output)
+#
+#    @staticmethod
+#    def backward(ctx, *grads):
+#        (input,) = ctx.saved_tensors
+#        grad_out = torch.zeros_like(input)
+#        grad_out[:] = grads[dist.get_rank()]
+#        return grad_out
+#
+#all_gather = GatherLayer.apply
 
-    @staticmethod
-    def forward(ctx, input):
-        ctx.save_for_backward(input)
-        output = [torch.zeros_like(input) for _ in range(dist.get_world_size())]
-        dist.all_gather(output, input)
-        return tuple(output)
 
-    @staticmethod
-    def backward(ctx, *grads):
-        (input,) = ctx.saved_tensors
-        grad_out = torch.zeros_like(input)
-        grad_out[:] = grads[dist.get_rank()]
-        return grad_out
-
-all_gather2 = GatherLayer.apply
-
-
-# From: https://github.com/PyTorchLightning/lightning-bolts/blob/master/pl_bolts/models/self_supervised/simclr/simclr_module.py#L20
+# Based on: https://github.com/PyTorchLightning/lightning-bolts/blob/master/pl_bolts/models/self_supervised/simclr/simclr_module.py#L20
 class SyncFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, tensor):
@@ -653,4 +638,4 @@ class SyncFunction(torch.autograd.Function):
         idx_to = (torch.distributed.get_rank() + 1) * ctx.batch_size
         return grad_input[idx_from:idx_to]
 
-all_gather3 = SyncFunction.apply
+all_gather = SyncFunction.apply
