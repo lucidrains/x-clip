@@ -22,15 +22,16 @@ class PyTorchDDPBackend(DistributedBackend):
 
         assert self.backend_module.is_available(), "PyTorch DDP backend is not available."
 
-        # print slurm setup for debugging
-        print(f"SLURM_NTASKS = world_size: {os.getenv('SLURM_NTASKS')}")
-        print(f"SLURM_PROCID = rank: {os.getenv('SLURM_PROCID')}")
-        print(f"SLURM_LOCALID = local_rank: {os.getenv('SLURM_LOCALID')}")
-
         # get environment variable
         self.world_size = int(os.getenv("SLURM_NTASKS"))
         self.rank       = int(os.getenv("SLURM_PROCID"))
         self.local_rank = int(os.getenv("SLURM_LOCALID"))
+
+        # print slurm setup for debugging
+        print(f"rank: {self.rank} MASTER_ADDR: {os.getenv('MASTER_ADDR')}")
+        print(f"rank: {self.rank} SLURM_NTASKS = world_size: {os.getenv('SLURM_NTASKS')}")
+        print(f"rank: {self.rank} SLURM_PROCID = rank: {os.getenv('SLURM_PROCID')}")
+        print(f"rank: {self.rank} SLURM_LOCALID = local_rank: {os.getenv('SLURM_LOCALID')}")
 
         # initialize the process group
         self.backend_module.init_process_group(backend="nccl", rank=self.rank, world_size=self.world_size)
@@ -75,8 +76,7 @@ class PyTorchDDPBackend(DistributedBackend):
         return (ddp_model, optimizer, training_data, lr_scheduler)
 
     def _average_all(self, tensor):
-        # Based on: https://github.com/rwightman/pytorch-image-models/blob/master/timm/utils/distributed.py#L11
-        rt = tensor.clone()
-        torch.distributed.all_reduce(rt, op=torch.distributed.ReduceOp.SUM, async_op=False) # Reduce op is average by default
-        rt /= self.get_world_size()
-        return rt
+        reduced_tensor = tensor.clone()
+        torch.distributed.all_reduce(reduced_tensor, op=torch.distributed.ReduceOp.SUM, async_op=False) # Reduce op is average by default
+        reduced_tensor /= self.get_world_size()
+        return reduced_tensor

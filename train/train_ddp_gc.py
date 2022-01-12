@@ -18,6 +18,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
 import torch.profiler
+# for grad_cache
+#from grad_cache import GradCache
 
 from x_clip import CLIP
 from x_clip.tokenizer import tokenizer
@@ -101,6 +103,10 @@ def get_args():
                         help="loss_over_ranks default: False)")
     parser.add_argument("--clip-grad-norm", type=float, default=None,
                         help="clip_grad_norm (default: None)")
+    parser.add_argument("--grad_cache", action="store_true", default=False,
+                        help="Gradient caching (default: False)")
+    parser.add_argument("--grad_cache_chunk_sizes", type=int, default=2,
+                        help="Gradient caching chunk sizes (default: 2")
 
     # logging and saving
     parser.add_argument("--save-interval-epoch", type=int, default=1,
@@ -162,7 +168,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, logger=None, writer=None):
+def train(args, distr_backend, model, optimizer, gc, dl_train, dl_valid, epochs, logger=None, writer=None):
 
     # TO DO: Check if still needed with latest PyTorch version.
     #torch.cuda.set_device(args.device)
@@ -171,7 +177,7 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
 
     step = 0
 
-    def one_epoch(args, distr_backend, model, optimizer, dl_train, dl_valid, epoch, step):
+    def one_epoch(args, distr_backend, model, optimizer, gc, dl_train, dl_valid, epoch, step):
         time_epoch_start = time.time()
 
         batch_time = AverageMeter()
@@ -223,14 +229,19 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
             text_mask = None
             image     = image.to(args.local_rank)
 
-            loss = model(
-                    text,
-                    image,
-                    text_mask = text_mask,
-                    return_loss = args.return_loss,
-                    freeze_image_encoder = args.freeze_image_encoder,
-                    text_to_image = args.text_to_image,
-                    )
+            if args.grad_cache:
+                loss = gc([text, image], no_sync_except_last=True)
+            else:
+                # for grad_cache
+                #loss = model.forward_with_loss(
+                loss = model(
+                        text,
+                        image,
+                        text_mask = text_mask,
+                        return_loss = args.return_loss,
+                        freeze_image_encoder = args.freeze_image_encoder,
+                        text_to_image = args.text_to_image,
+                        )
 
             loss.backward()
 
@@ -315,7 +326,7 @@ def train(args, distr_backend, model, optimizer, dl_train, dl_valid, epochs, log
     for epoch in range(args.epochs):
         # TO DO: Check this setup for the webdataset setup.
         os.environ["WDS_EPOCH"] = str(epoch)
-        model, optimizer, step = one_epoch(args, distr_backend, model, optimizer, dl_train, dl_valid, epoch, step)
+        model, optimizer, step = one_epoch(args, distr_backend, model, optimizer, gc, dl_train, dl_valid, epoch, step)
 
     cleanup()
     logger.info(f"{datetime.now()} rank: {args.rank} ddp cleanup")
@@ -409,6 +420,7 @@ def trainer():
             extra_latent_projection = args.extra_latent_projection,
             loss_over_ranks = args.loss_over_ranks,
             rank = args.rank,
+#            grad_cache = args.grad_cache,
     )
 
     if args.path_weights:
@@ -436,12 +448,23 @@ def trainer():
         lr_scheduler=None,
     )
 
+    if args.grad_cache:
+        gc = GradCache(
+                models = [distr_model],
+                chunk_sizes = args.grad_cache_chunk_sizes,
+                #loss_fn = distr_model.loss,
+                loss_fn = distr_model.module.loss_gc,
+                #get_rep_fn= # We should only need that in case the standard input does not work!
+                )
+
     if args.rank == 0: # only use tb writer in rank 0
         train(args, distr_backend=distr_backend, model=distr_model, optimizer=distr_opt,
+                gc=gc if args.grad_cache else None,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger, writer=writer)
     else:
         train(args, distr_backend=distr_backend, model=distr_model, optimizer=distr_opt,
+                gc=gc if args.grad_cache else None,
                 dl_train=dl_train, dl_valid=dl_valid,
                 epochs=args.epochs, logger=logger)
 
