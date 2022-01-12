@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'x-clip',
   packages = find_packages(exclude=[]),
-  version = '0.0.16',
+  version = '0.1.0',
   license='MIT',
   description = 'X-CLIP',
   author = 'Phil Wang',

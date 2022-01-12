@@ -276,7 +276,7 @@ class CLIP(nn.Module):
         # text ssl
 
         self.use_mlm = use_mlm
-        self.text_ssl_loss_weight = text_ssl_loss_weight
+        self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
 
         if use_mlm:
             self.mlm = MLM(
@@ -288,7 +288,7 @@ class CLIP(nn.Module):
         # image ssl
 
         self.use_visual_ssl = use_visual_ssl
-        self.image_ssl_loss_weight = image_ssl_loss_weight
+        self.image_ssl_loss_weight = image_ssl_loss_weight if use_visual_ssl else 0
 
         if use_visual_ssl:
             if visual_ssl_type == 'simsiam':
