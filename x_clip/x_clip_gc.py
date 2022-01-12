@@ -242,6 +242,7 @@ class CLIP(nn.Module):
         image_ssl_loss_weight = 0.05,
         loss_over_ranks = False,
         rank = None,
+        grad_cache = False,
     ):
         super().__init__()
         assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
@@ -280,7 +281,7 @@ class CLIP(nn.Module):
         # text ssl
 
         self.use_mlm = use_mlm
-        self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
+        self.text_ssl_loss_weight = text_ssl_loss_weight
 
         if use_mlm:
             self.mlm = MLM(
@@ -292,7 +293,7 @@ class CLIP(nn.Module):
         # image ssl
 
         self.use_visual_ssl = use_visual_ssl
-        self.image_ssl_loss_weight = image_ssl_loss_weight if use_visual_ssl else 0
+        self.image_ssl_loss_weight = image_ssl_loss_weight
 
         if use_visual_ssl:
             if visual_ssl_type == 'simsiam':
@@ -345,27 +346,16 @@ class CLIP(nn.Module):
         # loss ove ranks
         self.loss_over_ranks = loss_over_ranks
         self.rank = rank
+        self.grad_cache = grad_cache
 
-    def forward(
+
+    def forward_text(
         self,
         text,
-        image,
         text_mask = None,
-        return_loss = False,
-        freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
-        text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
-
-        # ssl
-
-        text_ssl_loss = 0
-        image_ssl_loss = 0
-
-        if return_loss:
-            text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
-            image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
 
         # get encoded text
 
@@ -376,6 +366,28 @@ class CLIP(nn.Module):
 
             if freeze_text_encoder:
                 enc_text.detach_()
+
+        # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
+
+        if self.use_all_token_embeds:
+            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
+        else:
+            text_embeds = enc_text[:, 0]
+
+        # project to latents
+
+        text_latents = self.to_text_latent(text_embeds)
+        text_latents = l2norm(text_latents)
+
+        return text_latents
+
+
+    def forward_image(
+        self,
+        image,
+        freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
+    ):
+        b, device = text.shape[0], text.device
 
         # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
 
@@ -390,41 +402,119 @@ class CLIP(nn.Module):
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
         if self.use_all_token_embeds:
-            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
             image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
         else:
-            text_embeds = enc_text[:, 0]
             image_embeds = enc_image[:, 0]
 
         # project to latents
 
-        text_latents = self.to_text_latent(text_embeds)
         image_latents = self.to_visual_latent(image_embeds)
-        text_latents, image_latents = map(l2norm, (text_latents, image_latents))
-
-        # calculate another set of latents for image to text (vs text to image)
-        # proposed by CLOOB
-
-        text_latents_extra, image_latents_extra = text_latents, image_latents
-        if self.extra_latent_projection:
-            text_latents_extra = self.to_text_latent_extra(text_embeds)
-            image_latents_extra = self.to_visual_latent_extra(image_embeds)
-            text_latents_extra, image_latents_extra = map(l2norm, (text_latents_extra, image_latents_extra))
-
-        # get temperature
-
-        temp = self.temperature.exp()
+        image_latents = l2norm(image_latents)
 
         # early return, if needed
 
-        if not return_loss and self.use_all_token_embeds:
-            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
-            return einsum('b t d, b i d -> b t i', *einsum_args) * temp
+        return image_latents
 
-        if not return_loss and not self.use_all_token_embeds:
-            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
-            return einsum('b d, b d -> b', *einsum_args) * temp
 
+# TO DO:
+# 1.) Add SSL for both modalities in a extra methods.
+# 2.) Add ...latents_extra setup
+# 3.) Add early return of similarity matrix again
+
+
+# ALL-IN-ONE FORWARD TEMPLATE
+#    def forward(
+#        self,
+#        text,
+#        image,
+#        text_mask = None,
+#        return_loss = True,
+#        freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
+#        freeze_text_encoder = False,    # text encoder is not trained if this is set to True
+#        text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
+#    ):
+#        b, device = text.shape[0], text.device
+#
+#        # ssl
+#
+#        text_ssl_loss = 0
+#        image_ssl_loss = 0
+#
+#        if return_loss:
+#            text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
+#            image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
+#
+#        # get encoded text
+#
+#        text_encoding_context = null_context if not freeze_text_encoder else torch.no_grad
+#
+#        with text_encoding_context():
+#            enc_text = self.text_transformer(text, mask = text_mask)
+#
+#            if freeze_text_encoder:
+#                enc_text.detach_()
+#
+#        # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
+#
+#        image_encoding_context = null_context if not freeze_image_encoder else torch.no_grad
+#
+#        with image_encoding_context():
+#            enc_image = self.visual_transformer(image)
+#
+#            if freeze_image_encoder:
+#                enc_image.detach_()
+#
+#        # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
+#
+#        if self.use_all_token_embeds:
+#            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
+#            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
+#        else:
+#            text_embeds = enc_text[:, 0]
+#            image_embeds = enc_image[:, 0]
+#
+#        # project to latents
+#
+#        text_latents = self.to_text_latent(text_embeds)
+#        image_latents = self.to_visual_latent(image_embeds)
+#        text_latents, image_latents = map(l2norm, (text_latents, image_latents))
+#
+#        # calculate another set of latents for image to text (vs text to image)
+#        # proposed by CLOOB
+#
+#        text_latents_extra, image_latents_extra = text_latents, image_latents
+#        if self.extra_latent_projection:
+#            text_latents_extra = self.to_text_latent_extra(text_embeds)
+#            image_latents_extra = self.to_visual_latent_extra(image_embeds)
+#            text_latents_extra, image_latents_extra = map(l2norm, (text_latents_extra, image_latents_extra))
+#
+#        # get temperature
+#
+#        temp = self.temperature.exp()
+#
+#        # early return, if needed
+#
+#        if not return_loss and self.use_all_token_embeds:
+#            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
+#            return einsum('b t d, b i d -> b t i', *einsum_args) * temp
+#
+#        if not return_loss and not self.use_all_token_embeds:
+#            einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
+#            return einsum('b d, b d -> b', *einsum_args) * temp
+#
+#        # TO DO: Add _extra outputs for returns below
+#
+#        if self.grad_cache:
+#            return torch.stack((text_latents, image_latents), dim=0)
+#        
+#        return text_latents, image_latents
+
+
+    def loss(self, text_latents, image_latents):
+        # TO DO: Check if there is a better way than to recalculate b and temp from model_forward?
+        b, device = text_latents.shape[0], text_latents.device
+        temp = self.temperature.exp()
+        
         # contrastive loss
 
         if self.loss_over_ranks:
@@ -528,6 +618,30 @@ class CLIP(nn.Module):
 #            + (image_ssl_loss * self.image_ssl_loss_weight)
 #
 #        return loss
+
+
+    def forward_with_loss(
+        self,
+        text,
+        image,
+        text_mask = None,
+        freeze_text_encoder = False,
+        freeze_image_encoder = False,
+        ):
+
+#        text_latents, image_latents = self.forward(
+#            text,
+#            image,
+#            text_mask = None,
+#            **kwargs
+#            )
+
+        text_latents = self.forward_text(text, text_mask, freeze_text_encoder)
+        image_latents = self.forward_image(image, freeze_image_encoder)
+
+        loss = self.loss(text_latents, image_latents)
+
+        return loss
 
 
 class AllGather(torch.autograd.Function):
