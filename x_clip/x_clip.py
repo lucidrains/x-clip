@@ -205,6 +205,24 @@ class VisionTransformer(nn.Module):
         out = self.transformer(x)
         return out
 
+# contrastive learning functions
+
+def model_forward_with_context(
+    *,
+    fn,
+    args,
+    freeze,
+):
+    encoding_context = null_context if not freeze else torch.no_grad
+
+    with encoding_context():
+        enc = fn(*args)
+
+        if freeze:
+            enc.detach_()
+
+    return enc
+
 # main clip class
 
 class CLIP(nn.Module):
@@ -366,23 +384,19 @@ class CLIP(nn.Module):
 
         # get encoded text
 
-        text_encoding_context = null_context if not freeze_text_encoder else torch.no_grad
-
-        with text_encoding_context():
-            enc_text = self.text_transformer(text, mask = text_mask)
-
-            if freeze_text_encoder:
-                enc_text.detach_()
+        enc_text = model_forward_with_context(
+            fn = self.text_transformer,
+            args = (text, text_mask),
+            freeze = freeze_text_encoder
+        )
 
         # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
 
-        image_encoding_context = null_context if not freeze_image_encoder else torch.no_grad
-
-        with image_encoding_context():
-            enc_image = self.visual_transformer(image)
-
-            if freeze_image_encoder:
-                enc_image.detach_()
+        enc_image = model_forward_with_context(
+            fn = self.visual_transformer,
+            args = (image,),
+            freeze = freeze_image_encoder
+        )
 
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
