@@ -446,17 +446,14 @@ class CLIP(nn.Module):
             if self.extra_latent_projection:
                 sim_image_to_text = einsum('x t d, y i d -> x y t i', text_latents_extra, image_latents_extra) * temp
 
-            if exists(text_mask):
-                text_to_image = reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max')
-                text_to_image_mask = rearrange(text_mask, 'bt t -> bt 1 t')
-                text_to_image = masked_mean(text_to_image, text_to_image_mask, dim = -1)
+            text_to_image = reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max')
+            text_to_image_mask = rearrange(text_mask, 'bt t -> bt 1 t')
+            text_to_image = masked_mean(text_to_image, text_to_image_mask, dim = -1)
 
-                image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
-                masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-                image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
-            else:
-                text_to_image = reduce(reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max'), 'bt bi t -> bt bi', 'mean')
-                image_to_text = reduce(reduce(sim_image_to_text, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
+            image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
+            masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
+            image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
+
         else:
             text_to_image = einsum('t d, i d -> t i', text_latents, image_latents) * temp
             image_to_text = text_to_image.t()
