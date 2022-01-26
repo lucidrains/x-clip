@@ -221,6 +221,7 @@ class CLIP(nn.Module):
         text_seq_len = 256,
         text_heads = 8,
         text_has_cls_token = True,
+        text_pad_id = 0,
         visual_enc_depth = 6,
         visual_heads = 8,
         visual_image_size = 256,
@@ -244,6 +245,7 @@ class CLIP(nn.Module):
 
         # instantiate text transformer
 
+        self.text_pad_id = text_pad_id
         self.text_has_cls_token = text_has_cls_token
 
         if exists(text_encoder):
@@ -342,13 +344,16 @@ class CLIP(nn.Module):
         self,
         text,
         image,
-        text_mask = None,
         return_loss = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
     ):
         b, device = text.shape[0], text.device
+
+        # derive text mask
+
+        text_mask = text != self.text_pad_id
 
         # ssl
 

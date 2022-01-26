@@ -44,14 +44,12 @@ clip = CLIP(
 
 text = torch.randint(0, 10000, (4, 256))
 images = torch.randn(4, 3, 256, 256)
-mask = torch.ones_like(text).bool()
 
 # train
 
 loss = clip(
     text,
     images,
-    text_mask = mask,               # mask for text
     freeze_image_encoder = False,   # whether to freeze image encoder if using a pretrained image net, proposed by LiT paper
     return_loss = True              # needs to be set to True to return contrastive loss
 )
@@ -102,9 +100,8 @@ clip = CLIP(
 
 text = torch.randint(0, 10000, (4, 256))
 images = torch.randn(4, 3, 256, 256)
-mask = torch.ones_like(text).bool()
 
-loss = clip(text, images, text_mask = mask, return_loss = True)
+loss = clip(text, images, return_loss = True)
 loss.backward()
 ```
 
@@ -152,9 +149,8 @@ clip = CLIP(
 
 text = torch.randint(0, 10000, (4, 256))
 images = torch.randn(4, 3, 256, 256)
-mask = torch.ones_like(text).bool()
 
-loss = clip(text, images, text_mask = mask, return_loss = True)
+loss = clip(text, images, return_loss = True)
 loss.backward()
 ```
 
