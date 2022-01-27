@@ -39,6 +39,16 @@ def log(t, eps = 1e-20):
 def l2norm(t):
     return F.normalize(t, dim = -1, p = 2)
 
+def matrix_diag(t):
+    device = t.device
+    i, j = t.shape[-2:]
+    num_diag_el = min(i, j)
+    i_range = torch.arange(i, device = device)
+    j_range = torch.arange(j, device = device)
+    diag_mask = rearrange(i_range, 'i -> i 1') == rearrange(j_range, 'j -> 1 j')
+    diag_el = t.masked_select(diag_mask)
+    return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
+
 # helper classes
 
 class RearrangeImage(nn.Module):
@@ -256,7 +266,8 @@ class CLIP(nn.Module):
         visual_ssl_type = 'simsiam',
         visual_ssl_hidden_layer = -1,
         simclr_temperature = 0.1,
-        image_ssl_loss_weight = 0.05
+        image_ssl_loss_weight = 0.05,
+        multiview_loss_weight = 0.1,
     ):
         super().__init__()
         assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
@@ -358,6 +369,8 @@ class CLIP(nn.Module):
         self.to_text_latent_extra = copy.deepcopy(self.to_text_latent)
         self.to_visual_latent_extra = copy.deepcopy(self.to_visual_latent)
 
+        self.multiview_loss_weight = multiview_loss_weight
+
     def forward(
         self,
         text,
@@ -365,7 +378,9 @@ class CLIP(nn.Module):
         return_loss = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
-        text_to_image = True            # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
+        text_to_image = True,           # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
+        aug_text = None,                # augmented text (for multiview)
+        aug_image = None                # augmented image (for multiview)
     ):
         b, device = text.shape[0], text.device
 
@@ -381,6 +396,28 @@ class CLIP(nn.Module):
         if return_loss:
             text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
             image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
+
+        # define number of batches of text and images, for multiview contrastive learning
+
+        num_batch_texts = 2 if exists(aug_text) else 1
+        num_batch_images = 2 if exists(aug_image) else 1
+
+        is_multiview = (num_batch_texts > 1 or num_batch_images > 1)
+        assert not (return_loss and not self.training), 'loss cannot be used if not training'
+        assert not (not return_loss and is_multiview), 'do not pass in augmented texts or images if not training'
+        assert not (self.multiview_loss_weight == 0 and is_multiview), 'multiview loss weight cannot be 0 if augmented text or images passed in'
+        # concat augmented texts and images
+
+        if exists(aug_text):
+            assert text.shape == aug_text.shape
+            aug_text_mask = aug_text != self.text_pad_id
+
+            text_mask = torch.cat((text_mask, aug_text_mask), dim = 0)
+            text = torch.cat((text, aug_text), dim = 0)
+
+        if exists(aug_image):
+            assert image.shape == aug_image.shape
+            image = torch.cat((image, aug_image), dim = 0)
 
         # get encoded text
 
@@ -436,32 +473,52 @@ class CLIP(nn.Module):
             einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
             return einsum('b d, b d -> b', *einsum_args) * temp
 
+        # split out multiview dimension for text and images
+
+        text_latents = rearrange(text_latents, '(m b) ... -> m b ...', m = num_batch_texts)
+        image_latents = rearrange(image_latents, '(m b) ... -> m b ...', m = num_batch_images)
+
+        if self.extra_latent_projection:
+            text_latents_extra = rearrange(text_latents_extra, '(m b) ... -> m b ...', m = num_batch_texts)
+            image_latents_extra = rearrange(image_latents_extra, '(m b) ... -> m b ...', m = num_batch_images)
+
         # contrastive loss
+
+        """
+        m - num batches of text (for multiview)
+        n - num batches of images (for multiview)
+        x - batches of text
+        y - batches of images
+        t - sequence dimension along text tokens
+        i - sequence dimension along image tokens
+        """
 
         if self.use_all_token_embeds:
             # fine-grained CLIP logic
-            sim_text_to_image = einsum('x t d, y i d -> x y t i', text_latents, image_latents) * temp
+            sim_text_to_image = einsum('m x t d, n y i d -> m n x y t i', text_latents, image_latents) * temp
 
             sim_image_to_text = sim_text_to_image
             if self.extra_latent_projection:
-                sim_image_to_text = einsum('x t d, y i d -> x y t i', text_latents_extra, image_latents_extra) * temp
+                sim_image_to_text = einsum('m x t d, n y i d -> m n x y t i', text_latents_extra, image_latents_extra) * temp
 
-            text_to_image = reduce(sim_text_to_image, 'bt bi t i -> bt bi t', 'max')
-            text_to_image_mask = rearrange(text_mask, 'bt t -> bt 1 t')
+            text_to_image = reduce(sim_text_to_image, '... t i -> ... t', 'max')
+            text_to_image_mask = rearrange(text_mask, '(m b) t -> m 1 b 1 t', m = num_batch_texts)
             text_to_image = masked_mean(text_to_image, text_to_image_mask, dim = -1)
 
-            image_to_text_mask = rearrange(text_mask, 'bt t -> bt 1 t 1')
+            image_to_text_mask = rearrange(text_mask, '(m b) t -> m 1 b 1 t 1', m = num_batch_texts)
             masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
-            image_to_text = reduce(reduce(masked_sim, 'bt bi t i -> bt bi i', 'max'), 'bt bi i -> bi bt', 'mean')
-
+            image_to_text = reduce(reduce(masked_sim, '... t i -> ... i', 'max'), '... i -> ...', 'mean')
         else:
-            text_to_image = einsum('t d, i d -> t i', text_latents, image_latents) * temp
-            image_to_text = text_to_image.t()
+            text_to_image = einsum('m t d, n i d -> m n t i', text_latents, image_latents) * temp
+            image_to_text = rearrange(text_to_image, '... t i -> ... i t')
 
             if self.extra_latent_projection:
-                image_to_text = einsum('t d, i d -> i t', text_latents_extra, image_latents_extra) * temp
+                image_to_text = einsum('m t d, n i d -> m n i t', text_latents_extra, image_latents_extra) * temp
 
         # calculate loss
+
+        text_to_image = rearrange(text_to_image, 'm n ... -> (m n) ...')
+        image_to_text = rearrange(image_to_text, 'm n ... -> (m n) ...')
 
         # exponentiate
 
@@ -469,7 +526,7 @@ class CLIP(nn.Module):
 
         # numerators
 
-        text_to_image_pos, image_to_text_pos = map(torch.diag, (text_to_image_exp, image_to_text_exp))
+        text_to_image_pos, image_to_text_pos = map(matrix_diag, (text_to_image_exp, image_to_text_exp))
 
         # denominator
 
@@ -481,17 +538,33 @@ class CLIP(nn.Module):
 
         # loss
 
-        text_to_image_loss = -log(text_to_image_pos / text_to_image_denom).mean()
-        image_to_text_loss = -log(image_to_text_pos / image_to_text_denom).mean()
+        text_to_image_loss = -log(text_to_image_pos / text_to_image_denom).mean(dim = -1)
+        image_to_text_loss = -log(image_to_text_pos / image_to_text_denom).mean(dim = -1)
 
-        cl_loss = (text_to_image_loss + image_to_text_loss) / 2
+        # calculate CL loss
+
+        cl_losses = (text_to_image_loss + image_to_text_loss) / 2
+
+        # get main CL loss vs multiview CL losses
+
+        cl_loss, multiview_cl_loss = cl_losses[0], cl_losses[1:]
+
+        # if no augmented text or images passed in, multiview loss weight is 0
+
+        has_multiview = multiview_cl_loss.numel() > 0
+        multiview_loss_weight = self.multiview_loss_weight if has_multiview else 0
 
         # calculate weights
 
-        cl_loss_weight = 1 - (self.text_ssl_loss_weight + self.image_ssl_loss_weight)
+        cl_loss_weight = 1 - (self.text_ssl_loss_weight + self.image_ssl_loss_weight + multiview_loss_weight)
 
         loss = (cl_loss * cl_loss_weight) \
             + (text_ssl_loss * self.text_ssl_loss_weight) \
             + (image_ssl_loss * self.image_ssl_loss_weight)
+
+        # add multiview CL loss with weight
+
+        if has_multiview:
+            loss = loss + multiview_cl_loss.mean() * multiview_loss_weight
 
         return loss

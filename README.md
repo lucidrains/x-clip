@@ -2,7 +2,7 @@
 
 <a href="https://discord.gg/xBPBXfcFHd"><img alt="Join us on Discord" src="https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white"></a>
 
-## x-clip (wip)
+## x-clip
 
 A concise but complete implementation of <a href="https://openai.com/blog/clip/">CLIP</a> with various experimental improvements from recent papers
 
@@ -151,6 +151,71 @@ text = torch.randint(0, 10000, (4, 256))
 images = torch.randn(4, 3, 256, 256)
 
 loss = clip(text, images, return_loss = True)
+loss.backward()
+```
+
+## Multiview CL Losses
+
+This repository also supports multiview contrastive learning loss, as proposed in <a href="https://arxiv.org/abs/2110.05208">DeCLIP</a>. Just pass in the augmented text and/or augmented image, and it will be auto-calculated, weighed by `multiview_loss_weight` set on initialization.
+
+ex.
+
+```python
+import torch
+from x_clip import CLIP, TextTransformer
+
+from vit_pytorch import ViT
+from vit_pytorch.extractor import Extractor
+
+base_vit = ViT(
+    image_size = 256,
+    patch_size = 32,
+    num_classes = 1000,
+    dim = 512,
+    depth = 6,
+    heads = 16,
+    mlp_dim = 2048,
+    dropout = 0.1,
+    emb_dropout = 0.1
+)
+
+image_encoder = Extractor(
+    base_vit,
+    return_embeddings_only = True
+)
+
+text_encoder = TextTransformer(
+    dim = 512,
+    num_tokens = 10000,
+    max_seq_len = 256 + 1,
+    depth = 6,
+    heads = 8
+)
+
+clip = CLIP(
+    image_encoder = image_encoder,
+    text_encoder = text_encoder,
+    dim_image = 512,
+    dim_text = 512,
+    dim_latent = 512,
+    extra_latent_projection = True,
+    multiview_loss_weight = 0.1         # weight multiview contrastive loss by 0.1
+)
+
+text = torch.randint(0, 10000, (4, 256))
+images = torch.randn(4, 3, 256, 256)
+
+aug_text = torch.randint(0, 10000, (4, 256))  # augmented text (backtranslation or EDA), same dimensions as text
+aug_images = torch.randn(4, 3, 256, 256)      # augmented images, same dimension as images above
+loss = clip(
+    text,
+    images,
+    aug_text = aug_text,           # pass in augmented texts
+    aug_image = aug_images,        # pass in augmented images
+    return_loss = True,
+    freeze_image_encoder = True
+)
+
 loss.backward()
 ```
 
