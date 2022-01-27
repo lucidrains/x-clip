@@ -27,6 +27,9 @@ def null_context():
 def max_neg_value(dtype):
     return -torch.finfo(dtype).max
 
+def cast_tuple(t):
+    return t if isinstance(t, (tuple, list)) else (t,)
+
 def masked_mean(t, mask, dim = 1, eps = 1e-6):
     t = t.masked_fill(~mask, 0.)
     numer = t.sum(dim = dim)
@@ -397,27 +400,35 @@ class CLIP(nn.Module):
             text_ssl_loss = self.mlm(text, mask = text_mask) if self.use_mlm else 0
             image_ssl_loss = self.visual_ssl(image) if self.use_visual_ssl else 0
 
-        # define number of batches of text and images, for multiview contrastive learning
+        # concat augmented texts and images and do some asserts
 
-        num_batch_texts = 2 if exists(aug_text) else 1
-        num_batch_images = 2 if exists(aug_image) else 1
-
-        is_multiview = (num_batch_texts > 1 or num_batch_images > 1)
-        assert not (return_loss and not self.training), 'loss cannot be used if not training'
-        assert not (not return_loss and is_multiview), 'do not pass in augmented texts or images if not training'
-        assert not (self.multiview_loss_weight == 0 and is_multiview), 'multiview loss weight cannot be 0 if augmented text or images passed in'
-        # concat augmented texts and images
+        num_batch_texts = num_batch_images = 1
 
         if exists(aug_text):
-            assert text.shape == aug_text.shape
+            aug_text = cast_tuple(aug_text)
+            assert all(map(lambda t: t.shape == text.shape, aug_text))
+            num_batch_texts = len(aug_text) + 1
+
+            aug_text = torch.cat(aug_text, dim = 0)
+
             aug_text_mask = aug_text != self.text_pad_id
 
             text_mask = torch.cat((text_mask, aug_text_mask), dim = 0)
             text = torch.cat((text, aug_text), dim = 0)
 
         if exists(aug_image):
-            assert image.shape == aug_image.shape
+            aug_image = cast_tuple(aug_image)
+            assert all(map(lambda i: i.shape == image.shape, aug_image))
+            num_batch_images = len(aug_image) + 1
+
+            aug_image = torch.cat(aug_image, dim = 0)
+
             image = torch.cat((image, aug_image), dim = 0)
+
+        is_multiview = (num_batch_texts > 1 or num_batch_images > 1)
+        assert not (return_loss and not self.training), 'loss cannot be used if not training'
+        assert not (not return_loss and is_multiview), 'do not pass in augmented texts or images if not training'
+        assert not (self.multiview_loss_weight == 0 and is_multiview), 'multiview loss weight cannot be 0 if augmented text or images passed in'
 
         # get encoded text
 

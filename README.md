@@ -219,6 +219,32 @@ loss = clip(
 loss.backward()
 ```
 
+You can even send in more than one augmented text or image
+
+```python
+# ...
+
+aug_texts = (
+    torch.randint(0, 10000, (4, 256)),
+    torch.randint(0, 10000, (4, 256)),
+)
+
+aug_images = (
+    torch.randn(4, 3, 256, 256),
+    torch.randn(4, 3, 256, 256),
+)
+
+loss = clip(
+    text,
+    images,
+    aug_text = aug_texts,
+    aug_image = aug_images,
+    return_loss = True,
+    freeze_image_encoder = True
+)
+
+loss.backward()
+```
 ## Citations
 
 ```bibtex
