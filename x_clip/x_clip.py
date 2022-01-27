@@ -551,8 +551,7 @@ class CLIP(nn.Module):
 
         # if no augmented text or images passed in, multiview loss weight is 0
 
-        has_multiview = multiview_cl_loss.numel() > 0
-        multiview_loss_weight = self.multiview_loss_weight if has_multiview else 0
+        multiview_loss_weight = self.multiview_loss_weight if is_multiview else 0
 
         # calculate weights
 
@@ -564,7 +563,7 @@ class CLIP(nn.Module):
 
         # add multiview CL loss with weight
 
-        if has_multiview:
+        if is_multiview:
             loss = loss + multiview_cl_loss.mean() * multiview_loss_weight
 
         return loss
