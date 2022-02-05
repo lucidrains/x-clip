@@ -52,6 +52,31 @@ def matrix_diag(t):
     diag_el = t.masked_select(diag_mask)
     return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
 
+# keyword argument helpers
+
+def pick_and_pop(keys, d):
+    values = list(map(lambda key: d.pop(key), keys))
+    return dict(zip(keys, values))
+
+def group_dict_by_key(cond, d):
+    return_val = [dict(),dict()]
+    for key in d.keys():
+        match = bool(cond(key))
+        ind = int(not match)
+        return_val[ind][key] = d[key]
+    return (*return_val,)
+
+def string_begins_with(prefix, str):
+    return str.startswith(prefix)
+
+def group_by_key_prefix(prefix, d):
+    return group_dict_by_key(partial(string_begins_with, prefix), d)
+
+def groupby_prefix_and_trim(prefix, d):
+    kwargs_with_prefix, kwargs = group_dict_by_key(partial(string_begins_with, prefix), d)
+    kwargs_without_prefix = dict(map(lambda x: (x[0][len(prefix):], x[1]), tuple(kwargs_with_prefix.items())))
+    return kwargs_without_prefix, kwargs
+
 # helper classes
 
 class RearrangeImage(nn.Module):
@@ -271,6 +296,7 @@ class CLIP(nn.Module):
         simclr_temperature = 0.1,
         image_ssl_loss_weight = 0.05,
         multiview_loss_weight = 0.1,
+        **kwargs
     ):
         super().__init__()
         assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
@@ -313,10 +339,13 @@ class CLIP(nn.Module):
         self.text_ssl_loss_weight = text_ssl_loss_weight if use_mlm else 0
 
         if use_mlm:
+            mlm_kwargs, kwargs = groupby_prefix_and_trim('mlm_', kwargs)
+
             self.mlm = MLM(
                 self.text_transformer,
                 dim = dim_text,
-                num_tokens = num_text_tokens
+                num_tokens = num_text_tokens,
+                **mlm_kwargs
             )
 
         # image ssl
