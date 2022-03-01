@@ -245,6 +245,62 @@ loss = clip(
 
 loss.backward()
 ```
+
+## Custom Vision Self-supervised Learning Module
+
+You can pass in your own vision self-supervised learning module through the `visual_ssl` keyword as so
+
+```python
+import torch
+from x_clip import CLIP
+from x_clip.visual_ssl import SimSiam
+
+from vit_pytorch import ViT
+from vit_pytorch.extractor import Extractor
+
+base_vit = ViT(
+    image_size = 256,
+    patch_size = 32,
+    num_classes = 1000,
+    dim = 512,
+    depth = 6,
+    heads = 16,
+    mlp_dim = 2048,
+    dropout = 0.1,
+    emb_dropout = 0.1
+)
+
+image_encoder = Extractor(
+    base_vit,
+    return_embeddings_only = True
+)
+
+visual_ssl = SimSiam(                 # SimSiam defined externally - needs to be a module that accepts an image of the same dimensions as CLIP and returns a scalar loss
+    image_encoder,
+    image_size = 256,
+    hidden_layer = -1
+)
+
+clip = CLIP(
+    image_encoder = image_encoder,
+    dim_image = 512,
+    dim_text = 512,
+    dim_latent = 512,
+    use_mlm = True,
+    visual_ssl = visual_ssl,           # SSL module passed into CLIP
+    use_all_token_embeds = False,
+    extra_latent_projection = False,
+    mlm_random_token_prob = 0.1
+)
+
+text = torch.randint(0, 10000, (4, 256))
+images = torch.randn(4, 3, 256, 256)
+
+loss = clip(text, images, return_loss = True)
+loss.backward()
+
+```
+
 ## Citations
 
 ```bibtex

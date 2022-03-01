@@ -291,6 +291,7 @@ class CLIP(nn.Module):
         use_mlm = False,
         text_ssl_loss_weight = 0.05,
         use_visual_ssl = False,
+        visual_ssl = None,
         visual_ssl_type = 'simsiam',
         visual_ssl_hidden_layer = -1,
         simclr_temperature = 0.1,
@@ -350,22 +351,26 @@ class CLIP(nn.Module):
 
         # image ssl
 
-        self.use_visual_ssl = use_visual_ssl
+        self.use_visual_ssl = use_visual_ssl or exists(visual_ssl)
         self.image_ssl_loss_weight = image_ssl_loss_weight if use_visual_ssl else 0
 
-        if use_visual_ssl:
-            if visual_ssl_type == 'simsiam':
-                ssl_type = SimSiam
-            elif visual_ssl_type == 'simclr':
-                ssl_type = partial(SimCLR, temperature = simclr_temperature)
-            else:
-                raise ValueError(f'unknown visual_ssl_type')
+        if self.use_visual_ssl:
+            if exists(visual_ssl):
+                self.visual_ssl = visual_ssl
 
-            self.visual_ssl = ssl_type(
-                self.visual_transformer,
-                image_size = visual_image_size,
-                hidden_layer = visual_ssl_hidden_layer
-            )
+            elif use_visual_ssl:
+                if visual_ssl_type == 'simsiam':
+                    ssl_type = SimSiam
+                elif visual_ssl_type == 'simclr':
+                    ssl_type = partial(SimCLR, temperature = simclr_temperature)
+                else:
+                    raise ValueError(f'unknown visual_ssl_type')
+
+                self.visual_ssl = ssl_type(
+                    self.visual_transformer,
+                    image_size = visual_image_size,
+                    hidden_layer = visual_ssl_hidden_layer
+                )
 
         # text latent projection
 
