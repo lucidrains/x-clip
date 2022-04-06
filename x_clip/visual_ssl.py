@@ -91,8 +91,8 @@ def nt_xent_loss(queries, keys, temperature = 0.1):
     logits = logits[~mask].reshape(n, n - 1)
     logits /= temperature
 
-    labels = torch.cat(((torch.arange(b, device=device) + b - 1), torch.arange(b, device=device)), dim=0)
-    loss = F.cross_entropy(logits, labels, reduction='sum')
+    labels = torch.cat(((torch.arange(b, device = device) + b - 1), torch.arange(b, device=device)), dim=0)
+    loss = F.cross_entropy(logits, labels, reduction = 'sum')
     loss /= n
     return loss
 
@@ -105,20 +105,27 @@ def loss_fn(x, y):
 
 # MLP class for projector and predictor
 
-class MLP(nn.Module):
-    def __init__(self, dim, projection_size, hidden_size = None):
-        super().__init__()
-        hidden_size = default(hidden_size, dim)
+def MLP(dim, projection_size, hidden_size = None):
+    hidden_size = default(hidden_size, dim)
 
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_size),
-            nn.BatchNorm1d(hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_size, projection_size)
-        )
+    return nn.Sequential(
+        nn.Linear(dim, hidden_size),
+        nn.BatchNorm1d(hidden_size),
+        nn.ReLU(inplace = True),
+        nn.Linear(hidden_size, projection_size)
+    )
 
-    def forward(self, x):
-        return self.net(x)
+def SimSiamMLP(dim, projection_size, hidden_size = 4096):
+    return nn.Sequential(
+        nn.Linear(dim, hidden_size, bias = False),
+        nn.BatchNorm1d(hidden_size),
+        nn.ReLU(inplace = True),
+        nn.Linear(hidden_size, hidden_size, bias=False),
+        nn.BatchNorm1d(hidden_size),
+        nn.ReLU(inplace = True),
+        nn.Linear(hidden_size, projection_size, bias = False),
+        nn.BatchNorm1d(projection_size, affine = False)
+    )
 
 # a wrapper class for the base neural network
 # will manage the interception of the hidden layer output
@@ -159,7 +166,7 @@ class NetWrapper(nn.Module):
     @singleton('projector')
     def _get_projector(self, hidden):
         _, dim = hidden.shape
-        projector = MLP(dim, self.projection_size, self.projection_hidden_size)
+        projector = SimSiamMLP(dim, self.projection_size, self.projection_hidden_size)
         return projector.to(hidden)
 
     def get_representation(self, x):
