@@ -463,6 +463,7 @@ class CLIP(nn.Module):
         text,
         image,
         return_loss = False,
+        return_encodings = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True,           # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
@@ -529,6 +530,11 @@ class CLIP(nn.Module):
             args = (image,),
             freeze = freeze_image_encoder
         )
+
+        # early return of encodings, if needed (for DALL-E2)
+
+        if return_encodings:
+            return enc_text, enc_image
 
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
