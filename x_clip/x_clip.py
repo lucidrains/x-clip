@@ -83,10 +83,21 @@ class RearrangeImage(nn.Module):
     def forward(self, x):
         return rearrange(x, 'b (h w) c -> b c h w', h = int(math.sqrt(x.shape[1])))
 
+class LayerNorm(nn.Module):
+    # bias-less layernorm
+
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(dim))
+        self.register_buffer('beta', torch.zeros(dim))
+
+    def forward(self, x):
+        return F.layer_norm(x, x.shape[-1:], self.gamma, self.beta)
+
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
+        self.norm = LayerNorm(dim)
         self.fn = fn
 
     def forward(self, x, **kwargs):
@@ -125,10 +136,10 @@ class FeedForward(nn.Module):
         inner_dim = int(dim * mult)
 
         self.net = nn.Sequential(
-            nn.Linear(dim, inner_dim),
+            nn.Linear(dim, inner_dim, bias = False),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(inner_dim, dim)
+            nn.Linear(inner_dim, dim, bias = False)
         )
 
     def forward(self, x):
@@ -142,7 +153,7 @@ class Attention(nn.Module):
         inner_dim = dim_head * heads
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
-        self.to_out = nn.Linear(inner_dim, dim)
+        self.to_out = nn.Linear(inner_dim, dim, bias = False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask = None, rotary_pos_emb = None):
@@ -188,7 +199,7 @@ class Transformer(nn.Module):
                 PreNorm(dim, FeedForward(dim = dim, mult = ff_mult)),
             ]))
 
-        self.norm_out = nn.LayerNorm(dim)
+        self.norm_out = LayerNorm(dim)
 
     def forward(
         self,
