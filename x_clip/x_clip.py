@@ -360,6 +360,12 @@ class CLIP(nn.Module):
         super().__init__()
         assert use_all_token_embeds or (visual_has_cls_token or text_has_cls_token), 'CLS token must be included on both vision and text transformers if you are not using fine-grained contrastive learning loss'
 
+        # store some parameters for access
+
+        self.dim_text = dim_text
+        self.dim_image = dim_image
+        self.dim_latent = dim_latent
+
         # instantiate text transformer
 
         self.text_pad_id = text_pad_id
