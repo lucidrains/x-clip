@@ -116,6 +116,8 @@ def MLP(dim, projection_size, hidden_size = None):
     )
 
 def SimSiamMLP(dim, projection_size, hidden_size = 4096):
+    hidden_size = default(hidden_size, projection_size * 2)
+
     return nn.Sequential(
         nn.Linear(dim, hidden_size, bias = False),
         nn.BatchNorm1d(hidden_size),
