@@ -366,6 +366,9 @@ class CLIP(nn.Module):
         self.dim_image = dim_image
         self.dim_latent = dim_latent
 
+        self.image_channels = channels
+        self.image_size = visual_image_size
+
         # instantiate text transformer
 
         self.text_pad_id = text_pad_id
