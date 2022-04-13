@@ -134,7 +134,7 @@ def SimSiamMLP(dim, projection_size, hidden_size = 4096):
 # and pipe it into the projecter and predictor nets
 
 class NetWrapper(nn.Module):
-    def __init__(self, net, projection_size, projection_hidden_size = None, layer = -2):
+    def __init__(self, net, projection_size, projection_hidden_size = 4096, layer = -2):
         super().__init__()
         self.net = net
         self.layer = layer
