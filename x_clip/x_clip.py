@@ -130,14 +130,19 @@ def apply_rotary_pos_emb(freqs, t):
 
 # transformer
 
+class SwiGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim = -1)
+        return x * F.silu(gate)
+
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4, dropout = 0.):
         super().__init__()
         inner_dim = int(dim * mult)
 
         self.net = nn.Sequential(
-            nn.Linear(dim, inner_dim, bias = False),
-            nn.GELU(),
+            nn.Linear(dim, inner_dim * 2, bias = False),
+            SwiGLU(),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim, bias = False)
         )
