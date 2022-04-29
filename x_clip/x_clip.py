@@ -378,6 +378,7 @@ class CLIP(nn.Module):
 
         self.text_pad_id = text_pad_id
         self.text_has_cls_token = text_has_cls_token
+        self.text_seq_len = text_seq_len
 
         if exists(text_encoder):
             self.text_transformer = text_encoder
