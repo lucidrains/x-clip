@@ -167,11 +167,13 @@ class Attention(nn.Module):
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
+        q = q * self.scale
+
         if exists(rotary_pos_emb):
             apply_rotary = partial(apply_rotary_pos_emb, rotary_pos_emb)
             q, k, v = map(apply_rotary, (q, k, v))
 
-        sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+        sim = einsum('b h i d, b h j d -> b h i j', q, k)
 
         if exists(mask):
             mask = rearrange(mask, 'b j -> b 1 1 j')
