@@ -10,6 +10,7 @@ setup(
   author = 'Phil Wang',
   author_email = 'lucidrains@gmail.com',
   url = 'https://github.com/lucidrains/x-clip',
+  long_description_content_type = 'text/markdown',
   keywords = [
     'artificial intelligence',
     'deep learning',
