@@ -143,6 +143,7 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(dim, inner_dim * 2, bias = False),
             SwiGLU(),
+            LayerNorm(inner_dim),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim, bias = False)
         )
@@ -158,7 +159,7 @@ class Attention(nn.Module):
         inner_dim = dim_head * heads
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
-        self.to_out = nn.Linear(inner_dim, dim, bias = False)
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, dim, bias = False), LayerNorm(dim))
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask = None, rotary_pos_emb = None):
@@ -177,6 +178,7 @@ class Attention(nn.Module):
             mask_value = -torch.finfo(sim.dtype).max
             sim = sim.masked_fill(~mask, mask_value)
 
+        sim = sim - sim.amax(dim = -1, keepdim = True).detach()
         attn = sim.softmax(dim = -1)
         attn = self.dropout(attn)
 
