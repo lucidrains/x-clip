@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 from einops import rearrange, repeat, reduce
-from einops.layers.torch import Rearrange
+from einops.layers.torch import Rearrange, Reduce
 
 from x_clip.mlm import MLM
 from x_clip.visual_ssl import SimSiam, SimCLR
@@ -130,10 +130,10 @@ def apply_rotary_pos_emb(freqs, t):
 
 # transformer
 
-class SwiGLU(nn.Module):
+class GEGLU(nn.Module):
     def forward(self, x):
         x, gate = x.chunk(2, dim = -1)
-        return x * F.silu(gate)
+        return x * F.gelu(gate)
 
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4, dropout = 0.):
@@ -142,7 +142,7 @@ class FeedForward(nn.Module):
 
         self.net = nn.Sequential(
             nn.Linear(dim, inner_dim * 2, bias = False),
-            SwiGLU(),
+            GEGLU(),
             LayerNorm(inner_dim),
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim, bias = False)
@@ -180,8 +180,7 @@ class Attention(nn.Module):
             mask_value = -torch.finfo(sim.dtype).max
             sim = sim.masked_fill(~mask, mask_value)
 
-        sim = sim - sim.amax(dim = -1, keepdim = True).detach()
-        attn = sim.softmax(dim = -1)
+        attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.dropout(attn)
 
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
@@ -208,6 +207,7 @@ class Transformer(nn.Module):
                 PreNorm(dim, FeedForward(dim = dim, mult = ff_mult)),
             ]))
 
+        self.norm_in = LayerNorm(dim)
         self.norm_out = LayerNorm(dim)
 
     def forward(
@@ -216,6 +216,8 @@ class Transformer(nn.Module):
         rotary_pos_emb = None,
         mask = None
     ):
+        x = self.norm_in(x)
+
         for attn, ff in self.layers:
             x = attn(x, mask = mask, rotary_pos_emb = rotary_pos_emb) + x
             x = ff(x) + x
@@ -282,8 +284,6 @@ class VisionTransformer(nn.Module):
         num_patches = (image_size // patch_size) ** 2
         patch_dim = channels * patch_size ** 2
 
-        self.cls_token = nn.Parameter(torch.randn(dim))
-
         self.to_tokens = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size),
             nn.Linear(patch_dim, dim)
@@ -291,6 +291,12 @@ class VisionTransformer(nn.Module):
 
         self.pos_emb = nn.Embedding(num_patches, dim)
         self.transformer = Transformer(dim, **kwargs)
+
+        self.to_cls_tokens = nn.Sequential(
+            Reduce('b n d -> b d', 'mean'),
+            nn.Linear(dim, dim, bias = False),
+            Rearrange('b d -> b 1 d')
+        )
 
     def forward(self, x):
         device = x.device
@@ -301,11 +307,10 @@ class VisionTransformer(nn.Module):
         pos_emb = self.pos_emb(torch.arange(n, device = device))
         x = x + rearrange(pos_emb, 'n d -> 1 n d')
 
-        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim = 1)
-
         out = self.transformer(x)
-        return out
+
+        cls_tokens = self.to_cls_tokens(out)
+        return torch.cat((cls_tokens, out), dim = 1)
 
 # contrastive learning functions
 
