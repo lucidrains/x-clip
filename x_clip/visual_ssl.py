@@ -21,13 +21,13 @@ class RandomApply(nn.Module):
             return x
         return self.fn(x)
 
-def get_default_aug(image_size):
+def get_default_aug(image_size, is_rgb = True):
     return torch.nn.Sequential(
         RandomApply(
             T.ColorJitter(0.8, 0.8, 0.8, 0.2),
             p = 0.3
         ),
-        T.RandomGrayscale(p=0.2),
+        T.RandomGrayscale(p = 0.2) if is_rgb else nn.Identity(),
         T.RandomHorizontalFlip(),
         RandomApply(
             T.GaussianBlur((3, 3), (1.0, 2.0)),
@@ -36,7 +36,8 @@ def get_default_aug(image_size):
         T.RandomResizedCrop((image_size, image_size)),
         T.Normalize(
             mean=torch.tensor([0.485, 0.456, 0.406]),
-            std=torch.tensor([0.229, 0.224, 0.225])),
+            std=torch.tensor([0.229, 0.224, 0.225])
+        ) if is_rgb else nn.Identity(),
     )
 
 # helper functions
@@ -204,6 +205,7 @@ class SimSiam(nn.Module):
         self,
         net,
         image_size,
+        channels = 3,
         hidden_layer = -2,
         projection_size = 256,
         projection_hidden_size = 4096,
@@ -215,7 +217,7 @@ class SimSiam(nn.Module):
 
         # default SimCLR augmentation
 
-        self.augment1 = default(augment_fn, get_default_aug(image_size))
+        self.augment1 = default(augment_fn, get_default_aug(image_size, is_rgb = channels == 3))
         self.augment2 = default(augment_fn2, self.augment1)
 
         self.online_encoder = NetWrapper(net, projection_size, projection_hidden_size, layer=hidden_layer)
@@ -226,7 +228,7 @@ class SimSiam(nn.Module):
         self.to(device)
 
         # send a mock image tensor to instantiate singleton parameters
-        self.forward(torch.randn(2, 3, image_size, image_size, device=device))
+        self.forward(torch.randn(2, channels, image_size, image_size, device=device))
 
     def forward(self, x):
         assert not (self.training and x.shape[0] == 1), 'you must have greater than 1 sample when training, due to the batchnorm in the projection layer'
@@ -259,6 +261,7 @@ class SimCLR(nn.Module):
         self,
         net,
         image_size,
+        channels = 3,
         hidden_layer = -2,
         project_hidden = True,
         project_dim = 128,
@@ -269,7 +272,7 @@ class SimCLR(nn.Module):
     ):
         super().__init__()
         self.net = NetWrapper(net, project_dim, layer = hidden_layer)
-        self.augment = default(augment_fn, get_default_aug(image_size))
+        self.augment = default(augment_fn, get_default_aug(image_size, is_rgb = channels == 3))
         self.augment_both = augment_both
         self.temperature = temperature
 
@@ -278,7 +281,7 @@ class SimCLR(nn.Module):
         self.to(device)
 
         # send a mock image tensor to instantiate parameters
-        self.forward(torch.randn(1, 3, image_size, image_size))
+        self.forward(torch.randn(1, channels, image_size, image_size))
 
     def forward(self, x):
         b, c, h, w, device = *x.shape, x.device

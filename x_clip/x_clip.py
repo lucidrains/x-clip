@@ -445,9 +445,9 @@ class CLIP(nn.Module):
 
             elif use_visual_ssl:
                 if visual_ssl_type == 'simsiam':
-                    ssl_type = SimSiam
+                    ssl_type = partial(SimSiam, channels = channels)
                 elif visual_ssl_type == 'simclr':
-                    ssl_type = partial(SimCLR, temperature = simclr_temperature)
+                    ssl_type = partial(SimCLR, temperature = simclr_temperature, channels = channels)
                 else:
                     raise ValueError(f'unknown visual_ssl_type')
 
