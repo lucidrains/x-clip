@@ -502,6 +502,7 @@ class CLIP(nn.Module):
         image,
         return_loss = False,
         return_encodings = False,
+        return_latents = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True,           # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
@@ -607,6 +608,14 @@ class CLIP(nn.Module):
             text_latents_extra = self.to_text_latent_extra(text_embeds)
             image_latents_extra = self.to_visual_latent_extra(image_embeds)
             text_latents_extra, image_latents_extra = map(l2norm, (text_latents_extra, image_latents_extra))
+
+        # whether to early return latents
+
+        if return_latents:
+            if self.extra_latent_projection:
+                return text_latents, image_latents, text_latents_extra, image_latents_extra
+
+            return text_latents, image_latents
 
         # get temperature
 
