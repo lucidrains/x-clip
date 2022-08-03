@@ -246,12 +246,12 @@ class Transformer(nn.Module):
         mask = None
     ):
         can_checkpoint = self.training and self.checkpoint_during_training
+        checkpoint_fn = make_checkpointable if can_checkpoint else identity
 
         x = self.norm_in(x)
 
         for attn, ff in self.layers:
-            if can_checkpoint:
-                attn, ff = map(make_checkpointable, (attn, ff))
+            attn, ff = map(checkpoint_fn, (attn, ff))
 
             x = attn(x, mask, rotary_pos_emb) + x
             x = ff(x) + x
@@ -404,7 +404,7 @@ class CLIP(nn.Module):
         simclr_temperature = 0.1,
         image_ssl_loss_weight = 0.05,
         multiview_loss_weight = 0.1,
-        checkpoint_during_training = True,
+        checkpoint_during_training = False,
         **kwargs
     ):
         super().__init__()
