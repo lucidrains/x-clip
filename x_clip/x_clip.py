@@ -349,6 +349,7 @@ class CLIP(nn.Module):
         text_has_cls_token = True,
         text_pad_id = 0,
         text_rotary_pos_emb = False,
+        text_encode_without_mask = False,
         visual_enc_depth = 6,
         visual_heads = 8,
         visual_dim_head = 64,
@@ -388,6 +389,8 @@ class CLIP(nn.Module):
         self.text_pad_id = text_pad_id
         self.text_has_cls_token = text_has_cls_token
         self.text_seq_len = text_seq_len
+
+        self.text_encode_without_mask = text_encode_without_mask # whether to pass in text mask to text encoder
 
         if exists(text_encoder):
             self.text_transformer = text_encoder
@@ -552,9 +555,14 @@ class CLIP(nn.Module):
 
         # get encoded text
 
+        text_args = (text,)
+
+        if not self.text_encode_without_mask:
+            text_args = (*text_args, text_mask)
+
         enc_text = model_forward_with_context(
             fn = self.text_transformer,
-            args = (text, text_mask),
+            args = text_args,
             freeze = freeze_text_encoder
         )
 
@@ -565,6 +573,11 @@ class CLIP(nn.Module):
             args = (image,),
             freeze = freeze_image_encoder
         )
+
+        # asserts
+
+        assert enc_text.ndim == 3, 'encoded text must have 3 dimensions (batch, seq, features)'
+        assert enc_image.ndim == 3, 'encoded image must have 3 dimensions (batch, seq [height x width], features)'
 
         # early return of encodings, if needed (for DALL-E2)
 
