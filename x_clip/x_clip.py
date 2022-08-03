@@ -1,11 +1,12 @@
 import math
 import copy
 from contextlib import contextmanager
-from functools import partial
+from functools import partial, wraps
 
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange, Reduce
 
@@ -13,6 +14,9 @@ from x_clip.mlm import MLM
 from x_clip.visual_ssl import SimSiam, SimCLR
 
 # helper functions
+
+def identity(t, *args, **kwargs):
+    return t
 
 def exists(val):
     return val is not None
@@ -52,6 +56,28 @@ def matrix_diag(t):
     diag_el = t.masked_select(diag_mask)
     return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
 
+# checkpointing helper function
+
+def make_checkpointable(fn, **kwargs):
+    if isinstance(fn, nn.ModuleList):
+        return [maybe(make_checkpointable)(el, **kwargs) for el in fn]
+
+    condition = kwargs.pop('condition', None)
+
+    if exists(condition) and not condition(fn):
+        return fn
+
+    @wraps(fn)
+    def inner(*args):
+        input_needs_grad = any([isinstance(el, torch.Tensor) and el.requires_grad for el in args])
+
+        if not input_needs_grad:
+            return fn(*args)
+
+        return checkpoint(fn, *args)
+
+    return inner
+
 # keyword argument helpers
 
 def pick_and_pop(keys, d):
@@ -84,15 +110,15 @@ class RearrangeImage(nn.Module):
         return rearrange(x, 'b (h w) c -> b c h w', h = int(math.sqrt(x.shape[1])))
 
 class LayerNorm(nn.Module):
-    # bias-less layernorm
-
     def __init__(self, dim):
         super().__init__()
-        self.gamma = nn.Parameter(torch.ones(dim))
-        self.register_buffer('beta', torch.zeros(dim))
+        self.g = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        return F.layer_norm(x, x.shape[-1:], self.gamma, self.beta)
+        eps = 1e-5 if x.dtype == torch.float32 else 1e-3
+        var = torch.var(x, dim = -1, unbiased = False, keepdim = True)
+        mean = torch.mean(x, dim = -1, keepdim = True)
+        return (x - mean) * (var + eps).rsqrt() * self.g
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
@@ -100,8 +126,8 @@ class PreNorm(nn.Module):
         self.norm = LayerNorm(dim)
         self.fn = fn
 
-    def forward(self, x, **kwargs):
-        return self.fn(self.norm(x), **kwargs)
+    def forward(self, x, *args, **kwargs):
+        return self.fn(self.norm(x), *args, **kwargs)
 
 # rotary positional embedding
 
@@ -197,9 +223,12 @@ class Transformer(nn.Module):
         heads = 8,
         attn_dropout = 0.,
         ff_dropout = 0.,
-        ff_mult = 4
+        ff_mult = 4,
+        checkpoint_during_training = False
     ):
         super().__init__()
+        self.checkpoint_during_training = checkpoint_during_training
+
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
@@ -216,10 +245,15 @@ class Transformer(nn.Module):
         rotary_pos_emb = None,
         mask = None
     ):
+        can_checkpoint = self.training and self.checkpoint_during_training
+
         x = self.norm_in(x)
 
         for attn, ff in self.layers:
-            x = attn(x, mask = mask, rotary_pos_emb = rotary_pos_emb) + x
+            if can_checkpoint:
+                attn, ff = map(make_checkpointable, (attn, ff))
+
+            x = attn(x, mask, rotary_pos_emb) + x
             x = ff(x) + x
 
         return self.norm_out(x)
@@ -370,6 +404,7 @@ class CLIP(nn.Module):
         simclr_temperature = 0.1,
         image_ssl_loss_weight = 0.05,
         multiview_loss_weight = 0.1,
+        checkpoint_during_training = True,
         **kwargs
     ):
         super().__init__()
@@ -402,7 +437,8 @@ class CLIP(nn.Module):
                 depth = text_enc_depth,
                 heads = text_heads,
                 dim_head = text_dim_head,
-                rotary_pos_emb = text_rotary_pos_emb
+                rotary_pos_emb = text_rotary_pos_emb,
+                checkpoint_during_training = checkpoint_during_training
             )
 
         # instantiate image transformer
@@ -419,7 +455,8 @@ class CLIP(nn.Module):
                 channels = channels,
                 depth = visual_enc_depth,
                 heads = visual_heads,
-                dim_head = visual_dim_head
+                dim_head = visual_dim_head,
+                checkpoint_during_training = checkpoint_during_training
             )
 
         # text ssl
