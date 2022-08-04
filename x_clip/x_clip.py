@@ -604,11 +604,6 @@ class CLIP(nn.Module):
             freeze = freeze_image_encoder
         )
 
-        # asserts
-
-        assert enc_text.ndim == 3, 'encoded text must have 3 dimensions (batch, seq, features)'
-        assert enc_image.ndim == 3, 'encoded image must have 3 dimensions (batch, seq [height x width], features)'
-
         # early return of encodings, if needed (for DALL-E2)
 
         if return_encodings:
@@ -617,11 +612,13 @@ class CLIP(nn.Module):
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
         if self.use_all_token_embeds:
+            assert enc_text.ndim == 3, 'encoded text must have 3 dimensions (batch, seq, features)'
+            assert enc_image.ndim == 3, 'encoded image must have 3 dimensions (batch, seq [height x width], features)'
             text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
             image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
         else:
-            text_embeds = enc_text[:, 0]
-            image_embeds = enc_image[:, 0]
+            text_embeds = enc_text[:, 0] if enc_text.ndim == 3 else enc_text
+            image_embeds = enc_image[:, 0] if enc_image.ndim == 3 else enc_image
 
         # project to latents
 
