@@ -197,7 +197,7 @@ class NetWrapper(nn.Module):
         if not return_projection:
             return representation
 
-        flattened_representation = rearrange(representation, 'b n d -> (b n) d')
+        flattened_representation = rearrange(representation, '... d -> (...) d')
         projector = self._get_projector(flattened_representation)
         projection = projector(flattened_representation)
         return projection, representation
