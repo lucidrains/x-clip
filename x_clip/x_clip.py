@@ -170,9 +170,10 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Attention(nn.Module):
-    def __init__(self, dim, dim_head = 64, heads = 8, dropout = 0.):
+    def __init__(self, dim, dim_head = 64, heads = 8, causal = False, dropout = 0.):
         super().__init__()
         self.heads = heads
+        self.causal = causal
         self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
 
@@ -181,7 +182,7 @@ class Attention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask = None, rotary_pos_emb = None):
-        h = self.heads
+        h, device = self.heads, x.device
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
@@ -193,10 +194,16 @@ class Attention(nn.Module):
 
         sim = einsum('b h i d, b h j d -> b h i j', q, k)
 
+        mask_value = -torch.finfo(sim.dtype).max
+
         if exists(mask):
             mask = rearrange(mask, 'b j -> b 1 1 j')
-            mask_value = -torch.finfo(sim.dtype).max
             sim = sim.masked_fill(~mask, mask_value)
+
+        if self.causal:
+            i, j = sim.shape[-2:]
+            causal_mask = torch.ones((i, j), dtype = torch.bool, device = device).triu(j - i + 1)
+            sim = sim.masked_fill(causal_mask, mask_value)
 
         attn = sim.softmax(dim = -1, dtype = torch.float32)
         attn = self.dropout(attn)
@@ -213,6 +220,7 @@ class Transformer(nn.Module):
         depth,
         dim_head = 64,
         heads = 8,
+        causal = False,
         attn_dropout = 0.,
         ff_dropout = 0.,
         ff_mult = 4,
@@ -224,7 +232,7 @@ class Transformer(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, dropout = attn_dropout)),
+                PreNorm(dim, Attention(dim = dim, dim_head = dim_head, heads = heads, causal = causal, dropout = attn_dropout)),
                 PreNorm(dim, FeedForward(dim = dim, mult = ff_mult)),
             ]))
 
@@ -261,6 +269,7 @@ class TextTransformer(nn.Module):
         max_seq_len,
         dim_head,
         rotary_pos_emb = None,
+        causal = False,
         **kwargs
     ):
         super().__init__()
@@ -269,9 +278,9 @@ class TextTransformer(nn.Module):
         self.abs_pos_emb = nn.Embedding(max_seq_len, dim) if not rotary_pos_emb else None
         self.rotary_pos_emb = RotaryEmbedding(min(dim_head, 32)) if rotary_pos_emb else None
 
-        self.cls_token = nn.Parameter(torch.randn(dim))
+        self.cls_token = nn.Parameter(torch.randn(dim)) if not causal else None
 
-        self.transformer = Transformer(dim, dim_head = dim_head, **kwargs)
+        self.transformer = Transformer(dim, dim_head = dim_head, causal = causal, **kwargs)
 
     def forward(self, x, mask = None):
         b, n, device = *x.shape, x.device
@@ -286,11 +295,12 @@ class TextTransformer(nn.Module):
         if exists(self.rotary_pos_emb):
             rotary_pos_emb = self.rotary_pos_emb(n + 1, device = device)
 
-        cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
-        x = torch.cat((cls_tokens, x), dim = 1)
+        if exists(self.cls_token):
+            cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
+            x = torch.cat((cls_tokens, x), dim = 1)
 
-        if exists(mask):
-            mask = F.pad(mask, (1, 0), value = True)
+            if exists(mask):
+                mask = F.pad(mask, (1, 0), value = True)
 
         out = self.transformer(x, mask = mask, rotary_pos_emb = rotary_pos_emb)
         return out
@@ -375,6 +385,8 @@ class CLIP(nn.Module):
         text_has_cls_token = True,
         text_pad_id = 0,
         text_rotary_pos_emb = False,
+        text_causal_mask = False,
+        text_eos_id = None,
         text_encode_without_mask = False,
         visual_enc_depth = 6,
         visual_heads = 8,
@@ -419,6 +431,11 @@ class CLIP(nn.Module):
 
         self.text_encode_without_mask = text_encode_without_mask # whether to pass in text mask to text encoder
 
+        self.text_causal_mask = text_causal_mask
+        self.text_eos_id = text_eos_id
+
+        assert not (text_causal_mask and not exists(text_eos_id)), 'text EOS token id must be given if using causal mask in text transformer'
+
         if exists(text_encoder):
             self.text_transformer = text_encoder
         else:
@@ -428,6 +445,7 @@ class CLIP(nn.Module):
                 max_seq_len = text_seq_len,
                 depth = text_enc_depth,
                 heads = text_heads,
+                causal = text_causal_mask,
                 dim_head = text_dim_head,
                 rotary_pos_emb = text_rotary_pos_emb,
                 checkpoint_during_training = checkpoint_during_training
@@ -595,6 +613,25 @@ class CLIP(nn.Module):
             args = text_args,
             freeze = freeze_text_encoder
         )
+
+        # depending on whether text is using causal mask, post process, moving eos token to the first position
+
+        if self.text_causal_mask:
+            eos_text_mask = (text == self.text_eos_id)
+            assert torch.all(torch.any(eos_text_mask, dim = -1)), f'some of the text rows does not have the eos id {self.text_eos_id}'
+
+            text_len = text.shape[-1]
+            eos_indices = eos_text_mask.float().argmax(dim = -1, keepdim = True)
+
+            eos_text_mask = torch.zeros_like(eos_text_mask).scatter(1, eos_indices, 1.).bool()
+            eos_text_mask = rearrange(eos_text_mask, '... -> ... 1')
+
+            eos_tokens = enc_text.masked_select(eos_text_mask)
+            rest_tokens = enc_text.masked_select(~eos_text_mask)
+
+            eos_tokens = rearrange(eos_tokens, '(b d) -> b 1 d', b = b)
+            rest_tokens = rearrange(rest_tokens, '(b n d) -> b n d', b = b, n = text_len - 1)
+            enc_text = torch.cat((eos_tokens, rest_tokens), dim = 1)
 
         # whether to train image encoder, in the case that the image net was pretrained as recommended in LiT
 
