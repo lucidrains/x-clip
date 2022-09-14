@@ -170,11 +170,11 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Attention(nn.Module):
-    def __init__(self, dim, dim_head = 64, heads = 8, causal = False, dropout = 0.):
+    def __init__(self, dim, dim_head = 64, heads = 8, causal = False, dropout = 0., scale = 10.):
         super().__init__()
         self.heads = heads
         self.causal = causal
-        self.scale = dim_head ** -0.5
+        self.scale = scale
         inner_dim = dim_head * heads
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
@@ -182,17 +182,18 @@ class Attention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask = None, rotary_pos_emb = None):
-        h, device = self.heads, x.device
+        h, device, scale = self.heads, x.device, self.scale
+
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
-        q = q * self.scale
+        q, k = map(l2norm, (q, k))
 
         if exists(rotary_pos_emb):
             apply_rotary = partial(apply_rotary_pos_emb, rotary_pos_emb)
             q, k, v = map(apply_rotary, (q, k, v))
 
-        sim = einsum('b h i d, b h j d -> b h i j', q, k)
+        sim = einsum('b h i d, b h j d -> b h i j', q, k) * scale
 
         mask_value = -torch.finfo(sim.dtype).max
 
@@ -206,6 +207,8 @@ class Attention(nn.Module):
             sim = sim.masked_fill(causal_mask, mask_value)
 
         attn = sim.softmax(dim = -1, dtype = torch.float32)
+        attn = attn.type(sim.dtype)
+
         attn = self.dropout(attn)
 
         out = einsum('b h i j, b h j d -> b h i d', attn, v)
