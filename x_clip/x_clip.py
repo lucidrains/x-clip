@@ -44,7 +44,7 @@ def log(t, eps = 1e-20):
     return torch.log(t + eps)
 
 def l2norm(t):
-    return F.normalize(t, dim = -1, p = 2)
+    return F.normalize(t, dim = -1)
 
 def matrix_diag(t):
     device = t.device
@@ -170,11 +170,11 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class Attention(nn.Module):
-    def __init__(self, dim, dim_head = 64, heads = 8, causal = False, dropout = 0., scale = 10.):
+    def __init__(self, dim, dim_head = 64, heads = 8, causal = False, dropout = 0.):
         super().__init__()
         self.heads = heads
         self.causal = causal
-        self.scale = scale
+        self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
@@ -187,13 +187,13 @@ class Attention(nn.Module):
         q, k, v = self.to_qkv(x).chunk(3, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
-        q, k = map(l2norm, (q, k))
+        q = q * self.scale
 
         if exists(rotary_pos_emb):
             apply_rotary = partial(apply_rotary_pos_emb, rotary_pos_emb)
             q, k, v = map(apply_rotary, (q, k, v))
 
-        sim = einsum('b h i d, b h j d -> b h i j', q, k) * scale
+        sim = einsum('b h i d, b h j d -> b h i j', q, k)
 
         mask_value = -torch.finfo(sim.dtype).max
 
