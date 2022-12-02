@@ -121,6 +121,27 @@ class PreNorm(nn.Module):
     def forward(self, x, *args, **kwargs):
         return self.fn(self.norm(x), *args, **kwargs)
 
+# patch dropout
+
+class PatchDropout(nn.Module):
+    def __init__(self, prob):
+        super().__init__()
+        assert 0 <= prob < 1.
+        self.prob = prob
+
+    def forward(self, x, force_keep_all = False):
+        if not self.training or self.prob == 0. or force_keep_all:
+            return x
+
+        b, n, _, device = *x.shape, x.device
+
+        batch_indices = torch.arange(b, device = device)
+        batch_indices = rearrange(batch_indices, '... -> ... 1')
+        num_patches_keep = max(1, int(n * (1 - self.prob)))
+        patch_indices_keep = torch.randn(b, n, device = device).topk(num_patches_keep, dim = -1).indices
+
+        return x[batch_indices, patch_indices_keep]
+
 # rotary positional embedding
 
 class RotaryEmbedding(nn.Module):
@@ -316,6 +337,7 @@ class VisionTransformer(nn.Module):
         image_size,
         patch_size,
         channels,
+        patch_dropout = 0.5,
         **kwargs
     ):
         super().__init__()
@@ -329,6 +351,8 @@ class VisionTransformer(nn.Module):
         )
 
         self.pos_emb = nn.Embedding(num_patches, dim)
+        self.patch_dropout = PatchDropout(patch_dropout)
+
         self.transformer = Transformer(dim, **kwargs)
 
         self.to_cls_tokens = nn.Sequential(
@@ -337,7 +361,11 @@ class VisionTransformer(nn.Module):
             Rearrange('b d -> b 1 d')
         )
 
-    def forward(self, x):
+    def forward(
+        self,
+        x,
+        keep_all_patches = False
+    ):
         device = x.device
 
         x = self.to_tokens(x)
@@ -345,6 +373,8 @@ class VisionTransformer(nn.Module):
 
         pos_emb = self.pos_emb(torch.arange(n, device = device))
         x = x + rearrange(pos_emb, 'n d -> 1 n d')
+
+        x = self.patch_dropout(x, force_keep_all = keep_all_patches)
 
         out = self.transformer(x)
 
@@ -396,6 +426,7 @@ class CLIP(nn.Module):
         visual_dim_head = 64,
         visual_image_size = 256,
         visual_patch_size = 32,
+        visual_patch_dropout = 0.5,
         visual_has_cls_token = True,
         channels = 3,
         use_all_token_embeds = False,
@@ -469,6 +500,7 @@ class CLIP(nn.Module):
                 depth = visual_enc_depth,
                 heads = visual_heads,
                 dim_head = visual_dim_head,
+                patch_dropout = visual_patch_dropout,
                 checkpoint_during_training = checkpoint_during_training
             )
 

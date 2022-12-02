@@ -30,6 +30,7 @@ clip = CLIP(
     visual_image_size = 256,
     visual_patch_size = 32,
     visual_heads = 8,
+    visual_patch_dropout = 0.5,             # patch dropout probability, used in Kaiming He's FLIP to save compute and improve end results - 0.5 is good value, 0.75 on high end is tolerable
     use_all_token_embeds = False,           # whether to use fine-grained contrastive learning (FILIP)
     decoupled_contrastive_learning = True,  # use decoupled contrastive learning (DCL) objective function, removing positive pairs from the denominator of the InfoNCE loss (CLOOB + DCL)
     extra_latent_projection = True,         # whether to use separate projections for text-to-image vs image-to-text comparisons (CLOOB)
@@ -396,5 +397,23 @@ loss.backward()
     year    = {2022},
     url     = {https://openreview.net/forum?id=GMYWzWztDx5},
     note    = {under review}
+}
+```
+
+```bibtex
+@inproceedings{Li2022ScalingLP,
+    title   = {Scaling Language-Image Pre-training via Masking},
+    author  = {Yanghao Li and Haoqi Fan and Ronghang Hu and Christoph Feichtenhofer and Kaiming He},
+    year    = {2022}
+}
+```
+
+```bibtex
+@article{Liu2022PatchDropoutEV,
+    title   = {PatchDropout: Economizing Vision Transformers Using Patch Dropout},
+    author  = {Yue Liu and Christos Matsoukas and Fredrik Strand and Hossein Azizpour and Kevin Smith},
+    journal = {ArXiv},
+    year    = {2022},
+    volume  = {abs/2208.07220}
 }
 ```
