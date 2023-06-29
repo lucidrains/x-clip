@@ -1,14 +1,22 @@
 # take from https://github.com/openai/CLIP/blob/main/clip/simple_tokenizer.py
 # to give users a quick easy start to training DALL-E without doing BPE
 
-import torch
 
-import html
 import os
+import html
 from functools import lru_cache
 from pathlib import Path
-import ftfy
+
 import regex as re
+import ftfy
+
+import torch
+import torch.nn.functional as F
+
+from beartype import beartype
+from beartype.typing import Optional, Union, List
+
+from torch.nn.utils.rnn import pad_sequence
 
 # OpenAI simple tokenizer
 
@@ -129,21 +137,33 @@ class SimpleTokenizer(object):
         text = bytearray([self.byte_decoder[c] for c in text]).decode('utf-8', errors="replace").replace('</w>', ' ')
         return text
 
-    def tokenize(self, texts, context_length = 256, truncate_text = False):
+    @beartype
+    def tokenize(
+        self,
+        texts: Union[str, List[str]],
+        context_length = 256,
+        truncate_text = False,
+        pad_to_context_length = False
+    ):
         if isinstance(texts, str):
             texts = [texts]
 
         all_tokens = [self.encode(text) for text in texts]
-        result = torch.zeros(len(all_tokens), context_length, dtype=torch.long)
+        all_tensors = tuple(torch.tensor(ids) for ids in all_tokens)
 
-        for i, tokens in enumerate(all_tokens):
-            if len(tokens) > context_length:
-                if truncate_text:
-                    tokens = tokens[:context_length]
-                else:
-                    raise RuntimeError(f"Input {texts[i]} is too long for context length {context_length}")
-            result[i, :len(tokens)] = torch.tensor(tokens)
+        tokens = pad_sequence(all_tensors, batch_first = True, padding_value = 0.)
 
-        return result
+        max_length = tokens.shape[-1]
+
+        if max_length > context_length:
+            if truncate_text:
+                tokens = tokens[:, :context_length]
+            else:
+                raise RuntimeError(f"One of the inputs is too long for context length {context_length}")
+
+        if pad_to_context_length and max_length < context_length:
+            tokens = F.pad(tokens, (0, context_length - max_length), value = 0)
+
+        return tokens
 
 tokenizer = SimpleTokenizer()
