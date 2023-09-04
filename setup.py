@@ -4,7 +4,7 @@ setup(
   name = 'x-clip',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.12.4',
+  version = '0.12.5',
   license='MIT',
   description = 'X-CLIP',
   author = 'Phil Wang',
