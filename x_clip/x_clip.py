@@ -5,17 +5,16 @@ from functools import partial, wraps
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as distributed
 from torch import nn, einsum
 from torch.utils.checkpoint import checkpoint
-
-from torch.autograd import Function
-import torch.distributed as distributed
 
 from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange, Reduce
 
 from x_clip.mlm import MLM
 from x_clip.visual_ssl import SimSiam, SimCLR
+from x_clip.distributed import all_gather
 
 # helper functions
 
@@ -64,60 +63,6 @@ def matrix_diag(t):
     diag_mask = rearrange(i_range, 'i -> i 1') == rearrange(j_range, 'j -> 1 j')
     diag_el = t.masked_select(diag_mask)
     return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
-
-# distributed helpers
-
-def all_gather_variable_dim(t, dim = 0):
-    device, rank, world_size = t.device, distributed.get_rank(), distributed.get_world_size()
-
-    size = torch.tensor(t.shape[dim], device = device, dtype = torch.long)
-    sizes = [torch.empty_like(size, device = device, dtype = torch.long) for i in range(world_size)]
-    distributed.all_gather(sizes, size)
-
-    sizes = torch.stack(sizes)
-    max_size = sizes.amax().item()
-    padded_t = pad_dim_to(t, max_size, dim = dim)
-
-    gathered_tensors = [torch.empty(padded_t.shape, device = device, dtype = padded_t.dtype) for i in range(world_size)]
-    distributed.all_gather(gathered_tensors, padded_t)
-
-    gathered_tensor = torch.cat(gathered_tensors, dim = dim)
-    seq = torch.arange(max_size, device = device)
-
-    mask = rearrange(seq, 'j -> 1 j') < rearrange(sizes, 'i -> i 1')
-    mask = rearrange(mask, 'i j -> (i j)')
-    seq = torch.arange(mask.shape[-1], device = device)
-    indices = seq[mask]
-
-    gathered_tensor = gathered_tensor.index_select(dim, indices)
-    sizes = sizes.tolist()
-
-    return gathered_tensor, sizes
-
-class MaybeAllGather(Function):
-    @staticmethod
-    def forward(ctx, x, dim):
-        is_distributed = distributed.is_initialized() and distributed.get_world_size() > 1
-        ctx.is_distributed = is_distributed
-        ctx.dim = dim
-
-        if not is_distributed:
-            return x
-
-        x, batch_sizes = all_gather_variable_dim(x, dim = dim)
-        ctx.batch_sizes = batch_sizes
-        return x
-
-    @staticmethod
-    def backward(ctx, grads):
-        if not ctx.is_distributed:
-            return grads, None
-
-        batch_sizes, rank = ctx.batch_sizes, distributed.get_rank()
-        grads_by_rank = grads.split(batch_sizes, dim = ctx.dim)
-        return grads_by_rank[rank], None
-
-maybe_all_gather = MaybeAllGather.apply
 
 # checkpointing helper function
 
@@ -641,6 +586,9 @@ class CLIP(nn.Module):
 
         self.multiview_loss_weight = multiview_loss_weight
 
+        # is distributed or not
+        self.requires_all_gather = distributed.is_initialized() and distributed.get_world_size() > 1
+
     def forward(
         self,
         text,
@@ -803,12 +751,15 @@ class CLIP(nn.Module):
 
         # maybe distributed all gather
 
-        text_latents = maybe_all_gather(text_latents, 1)
-        image_latents = maybe_all_gather(image_latents, 1)
+        if self.requires_all_gather:
+            latents = torch.stack((text_latents, image_latents))
+            latents, sizes = all_gather(latents, 2, None)
+            text_latents, image_latents = latents
 
-        if self.extra_latent_projection:
-            text_latents_extra = maybe_all_gather(text_latents_extra, 1)
-            image_latents_extra = maybe_all_gather(image_latents_extra, 1)
+            if self.extra_latent_projection:
+                latents_extra = torch.stack((text_latents_extra, image_latents_extra))
+                latents_extra, _ = all_gather(latents_extra, 2, sizes)
+                text_latents_extra, image_latents_extra = latents_extra
 
         # contrastive loss
 
