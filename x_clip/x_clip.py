@@ -451,6 +451,7 @@ class CLIP(nn.Module):
         image_ssl_loss_weight = 0.05,
         multiview_loss_weight = 0.1,
         checkpoint_during_training = False,
+        sim_reg_loss_weight = 0.,
         **kwargs
     ):
         super().__init__()
@@ -589,6 +590,10 @@ class CLIP(nn.Module):
         # is distributed or not
         self.requires_all_gather = distributed.is_initialized() and distributed.get_world_size() > 1
 
+        # use the similarity regularization proposed in https://arxiv.org/abs/2309.08773
+        self.sim_reg_loss_weight = sim_reg_loss_weight
+        self.has_sim_reg_loss = sim_reg_loss_weight > 0.
+
     def forward(
         self,
         text,
@@ -602,7 +607,7 @@ class CLIP(nn.Module):
         aug_text = None,                # augmented text (for multiview)
         aug_image = None                # augmented image (for multiview)
     ):
-        b, device = text.shape[0], text.device
+        batch, device = text.shape[0], text.device
 
         # derive text mask
 
@@ -756,10 +761,27 @@ class CLIP(nn.Module):
             latents, sizes = all_gather(latents, 2, None)
             text_latents, image_latents = latents
 
+            batch = sizes.sum().item()
+
             if self.extra_latent_projection:
                 latents_extra = torch.stack((text_latents_extra, image_latents_extra))
                 latents_extra, _ = all_gather(latents_extra, 2, sizes)
                 text_latents_extra, image_latents_extra = latents_extra
+
+        # maybe similarity regularize
+
+        sim_reg_loss = 0.
+
+        if self.has_sim_reg_loss:
+            diag_mask = torch.eye(batch, device = device, dtype = torch.bool)
+            off_diag_mask = rearrange(~diag_mask, '... -> 1 ...')
+
+            text_sim, image_sim, text_extra_sim, image_extra_sim = map(lambda t: einsum('m i ... d, m j ... d -> m ... i j', t, t)[off_diag_mask], (text_latents, image_latents, text_latents_extra, image_latents_extra))
+
+            sim_reg_loss = (
+                F.mse_loss(text_sim, image_sim) +
+                F.mse_loss(text_extra_sim, image_extra_sim)
+            ) / 2
 
         # contrastive loss
 
@@ -810,7 +832,7 @@ class CLIP(nn.Module):
         # denominator
 
         if self.decoupled_contrastive_learning:
-            pos_mask = torch.eye(b, device = device, dtype = torch.bool)
+            pos_mask = torch.eye(batch, device = device, dtype = torch.bool)
             text_to_image_exp, image_to_text_exp = map(lambda t: t.masked_fill(pos_mask, 0.), (text_to_image_exp, image_to_text_exp))
 
         text_to_image_denom, image_to_text_denom = map(lambda t: t.sum(dim = -1), (text_to_image_exp, image_to_text_exp))
@@ -844,5 +866,10 @@ class CLIP(nn.Module):
 
         if is_multiview:
             loss = loss + multiview_cl_loss.mean() * multiview_loss_weight
+
+        # add similarity regularization loss with weight if needed
+
+        if self.has_sim_reg_loss:
+            loss = loss + sim_reg_loss + self.sim_reg_loss_weight
 
         return loss
