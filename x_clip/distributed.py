@@ -4,6 +4,11 @@ import torch.distributed as distributed
 
 from einops import rearrange
 
+def pad_dim_to(t, length, dim = 0):
+    pad_length = length - t.shape[dim]
+    zero_pairs = (-dim - 1) if dim < 0 else (t.ndim - dim - 1)
+    return F.pad(t, (*((0, 0) * zero_pairs), 0, pad_length))
+
 # distributed helpers
 
 def all_gather_variable_dim(t, dim = 0, sizes = None):
