@@ -7,7 +7,7 @@ import html
 from functools import lru_cache
 from pathlib import Path
 
-import re
+import regex as re
 import ftfy
 
 import torch

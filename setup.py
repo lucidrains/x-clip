@@ -4,7 +4,7 @@ setup(
   name = 'x-clip',
   packages = find_packages(exclude=[]),
   include_package_data = True,
-  version = '0.14.3',
+  version = '0.14.2',
   license='MIT',
   description = 'X-CLIP',
   author = 'Phil Wang',
@@ -21,6 +21,7 @@ setup(
     'beartype',
     'einops>=0.6',
     'ftfy',
+    'regex',
     'torch>=1.6',
     'torchvision'
   ],
