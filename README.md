@@ -429,3 +429,27 @@ loss.backward()
 }
 ```
 
+```bibtex
+@inproceedings{hao2021provable,
+    title   = {Provable Guarantees for Self-Supervised Deep Learning with Spectral Contrastive Loss},
+    author  = {Jeff Z. HaoChen and Colin Wei and Adrien Gaidon and Tengyu Ma},
+    booktitle = {Advances in Neural Information Processing Systems},
+    year    = {2021},
+    eprint  = {2106.04156},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
+}
+```
+
+```bibtex
+@inproceedings{eysenbach2022contrastive,
+    title   = {Contrastive Learning as Goal-Conditioned Reinforcement Learning},
+    author  = {Benjamin Eysenbach and Tianjun Zhang and Sergey Levine and Ruslan Salakhutdinov},
+    booktitle = {Advances in Neural Information Processing Systems},
+    year    = {2022},
+    eprint  = {2206.07568},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
+}
+```
+

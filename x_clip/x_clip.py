@@ -1,5 +1,6 @@
 import math
 import copy
+from collections import namedtuple
 from contextlib import contextmanager
 from functools import partial, wraps
 
@@ -63,6 +64,40 @@ def matrix_diag(t):
     diag_mask = rearrange(i_range, 'i -> i 1') == rearrange(j_range, 'j -> 1 j')
     diag_el = t.masked_select(diag_mask)
     return rearrange(diag_el, '(b d) -> b d', d = num_diag_el)
+
+def off_diagonal(t):
+    i, j = t.shape[-2:]
+    assert i == j, 'off diagonal requires square matrices'
+    mask = ~torch.eye(i, device = t.device, dtype = torch.bool)
+    return t[..., mask]
+
+def off_diagonal_mse(t):
+    t = off_diagonal(t)
+    return (t ** 2).mean()
+
+def spectral_contrastive_loss(text_latents, image_latents):
+    sim = einsum('m i d, n j d -> m n i j', text_latents, image_latents)
+    return -2 * matrix_diag(sim).mean() + off_diagonal_mse(sim)
+
+def logsumexp_regularizer(sim):
+    return (torch.logsumexp(sim, dim = -1) ** 2).mean()
+
+def average_directions(text_to_image, image_to_text, asymmetric = False):
+    return text_to_image if asymmetric else (text_to_image + image_to_text) / 2
+
+# losses
+
+Losses = namedtuple('Losses', [
+    'loss',
+    'contrastive',
+    'text_ssl',
+    'image_ssl',
+    'multiview',
+    'sim_reg',
+    'spectral',
+    'logsumexp',
+    'negative_mse'
+])
 
 # checkpointing helper function
 
@@ -452,6 +487,10 @@ class CLIP(nn.Module):
         multiview_loss_weight = 0.1,
         checkpoint_during_training = False,
         sim_reg_loss_weight = 0.,
+        spectral_loss_weight = 0.,
+        asymmetric_infonce = False,
+        logsumexp_reg_loss_weight = 0.,
+        negative_mse_loss_weight = 0.,
         **kwargs
     ):
         super().__init__()
@@ -594,6 +633,25 @@ class CLIP(nn.Module):
         self.sim_reg_loss_weight = sim_reg_loss_weight
         self.has_sim_reg_loss = sim_reg_loss_weight > 0.
 
+        # use the spectral contrastive loss proposed in https://arxiv.org/abs/2106.04156
+        self.spectral_loss_weight = spectral_loss_weight
+        self.has_spectral_loss = spectral_loss_weight > 0.
+
+        assert not (self.has_spectral_loss and use_all_token_embeds), 'spectral contrastive loss is not supported with fine-grained token embeddings'
+
+        # use only the text-to-image direction for infoNCE
+        self.asymmetric_infonce = asymmetric_infonce
+
+        # use the logsumexp regularizer proposed in https://arxiv.org/abs/2206.07568 (CRL)
+        self.logsumexp_reg_loss_weight = logsumexp_reg_loss_weight
+        self.has_logsumexp_reg_loss = logsumexp_reg_loss_weight > 0.
+
+        assert not (self.has_logsumexp_reg_loss and not asymmetric_infonce), 'logsumexp regularizer requires asymmetric infonce'
+
+        # use an MSE penalty on the negative inner products
+        self.negative_mse_loss_weight = negative_mse_loss_weight
+        self.has_negative_mse_loss = negative_mse_loss_weight > 0.
+
     def forward(
         self,
         text,
@@ -601,6 +659,7 @@ class CLIP(nn.Module):
         return_loss = False,
         return_encodings = False,
         return_latents = False,
+        return_loss_breakdown = False,
         freeze_image_encoder = False,   # image encoder is not trained if this is set to True, proposed by LiT paper
         freeze_text_encoder = False,    # text encoder is not trained if this is set to True
         text_to_image = True,           # in the case the extra projection is turned on, would return different similarity values depending on modality directionality
@@ -608,6 +667,8 @@ class CLIP(nn.Module):
         aug_image = None                # augmented image (for multiview)
     ):
         batch, device = text.shape[0], text.device
+
+        assert not (return_loss_breakdown and not return_loss), 'return_loss must be True if return_loss_breakdown is True'
 
         # derive text mask
 
@@ -783,6 +844,13 @@ class CLIP(nn.Module):
                 F.mse_loss(text_extra_sim, image_extra_sim)
             ) / 2
 
+        # maybe spectral contrastive loss
+
+        spectral_loss = 0.
+
+        if self.has_spectral_loss:
+            spectral_loss = spectral_contrastive_loss(text_latents, image_latents)
+
         # contrastive loss
 
         """
@@ -796,11 +864,11 @@ class CLIP(nn.Module):
 
         if self.use_all_token_embeds:
             # fine-grained CLIP logic
-            sim_text_to_image = einsum('m x t d, n y i d -> m n x y t i', text_latents, image_latents) * temp
+            sim_text_to_image = einsum('m x t d, n y i d -> m n x y t i', text_latents, image_latents)
 
             sim_image_to_text = sim_text_to_image
             if self.extra_latent_projection:
-                sim_image_to_text = einsum('m x t d, n y i d -> m n x y t i', text_latents_extra, image_latents_extra) * temp
+                sim_image_to_text = einsum('m x t d, n y i d -> m n x y t i', text_latents_extra, image_latents_extra)
 
             text_to_image = reduce(sim_text_to_image, '... t i -> ... t', 'max')
             text_to_image_mask = rearrange(text_mask, '(m b) t -> m 1 b 1 t', m = num_batch_texts)
@@ -810,16 +878,42 @@ class CLIP(nn.Module):
             masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
             image_to_text = reduce(reduce(masked_sim, '... t i -> ... i', 'max'), '... i -> ...', 'mean')
         else:
-            text_to_image = einsum('m t d, n i d -> m n t i', text_latents, image_latents) * temp
+            text_to_image = einsum('m t d, n i d -> m n t i', text_latents, image_latents)
             image_to_text = rearrange(text_to_image, '... t i -> ... i t')
 
             if self.extra_latent_projection:
-                image_to_text = einsum('m t d, n i d -> m n i t', text_latents_extra, image_latents_extra) * temp
+                image_to_text = einsum('m t d, n i d -> m n i t', text_latents_extra, image_latents_extra)
 
         # calculate loss
 
         text_to_image = rearrange(text_to_image, 'm n ... -> (m n) ...')
         image_to_text = rearrange(image_to_text, 'm n ... -> (m n) ...')
+
+        # keep raw similarities for the negative regularizer
+
+        text_to_image_raw, image_to_text_raw = text_to_image, image_to_text
+
+        # apply temperature
+
+        text_to_image, image_to_text = map(lambda t: t * temp, (text_to_image_raw, image_to_text_raw))
+
+        # maybe logsumexp regularize
+
+        logsumexp_reg_loss = 0.
+
+        if self.has_logsumexp_reg_loss:
+            logsumexp_reg_loss = logsumexp_regularizer(text_to_image)
+
+        # maybe regularize negative inner products towards zero
+
+        negative_mse_loss = 0.
+
+        if self.has_negative_mse_loss:
+            negative_mse_loss = average_directions(
+                off_diagonal_mse(text_to_image_raw),
+                off_diagonal_mse(image_to_text_raw),
+                self.asymmetric_infonce
+            )
 
         # exponentiate
 
@@ -844,7 +938,7 @@ class CLIP(nn.Module):
 
         # calculate CL loss
 
-        cl_losses = (text_to_image_loss + image_to_text_loss) / 2
+        cl_losses = average_directions(text_to_image_loss, image_to_text_loss, self.asymmetric_infonce)
 
         # get main CL loss vs multiview CL losses
 
@@ -871,5 +965,33 @@ class CLIP(nn.Module):
 
         if self.has_sim_reg_loss:
             loss = loss + sim_reg_loss * self.sim_reg_loss_weight
+
+        # add spectral contrastive loss with weight if needed
+
+        if self.has_spectral_loss:
+            loss = loss + spectral_loss * self.spectral_loss_weight
+
+        # add logsumexp regularizer with weight if needed
+
+        if self.has_logsumexp_reg_loss:
+            loss = loss + logsumexp_reg_loss * self.logsumexp_reg_loss_weight
+
+        # add negative mse regularization with weight if needed
+
+        if self.has_negative_mse_loss:
+            loss = loss + negative_mse_loss * self.negative_mse_loss_weight
+
+        if return_loss_breakdown:
+            return Losses(
+                loss,
+                cl_loss,
+                text_ssl_loss,
+                image_ssl_loss,
+                multiview_cl_loss.mean() if is_multiview else 0.,
+                sim_reg_loss,
+                spectral_loss,
+                logsumexp_reg_loss,
+                negative_mse_loss
+            )
 
         return loss

@@ -1,0 +1,58 @@
+[project]
+name = "x-clip"
+version = "0.14.5"
+description = "X-CLIP"
+readme = "README.md"
+requires-python = ">=3.6"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Phil Wang", email = "lucidrains@gmail.com" }
+]
+keywords = [
+    "artificial intelligence",
+    "deep learning",
+    "contrastive learning",
+    "CLIP"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.6"
+]
+dependencies = [
+    "beartype",
+    "einops>=0.6",
+    "ftfy",
+    "regex",
+    "torch>=1.6",
+    "torchvision"
+]
+
+[project.urls]
+Homepage = "https://github.com/lucidrains/x-clip"
+Repository = "https://github.com/lucidrains/x-clip"
+
+[project.optional-dependencies]
+test = [
+    "pytest"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["x_clip"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "x_clip",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
