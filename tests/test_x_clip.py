@@ -1,8 +1,9 @@
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-from x_clip import CLIP, Losses
+from x_clip import CLIP, TextTransformer, VisionTransformer, ModalityTower, Losses
 from x_clip.x_clip import spectral_contrastive_loss
 
 # fixtures
@@ -32,6 +33,46 @@ def make_data(batch = 4):
     text = torch.randint(0, 100, (batch, 8))
     images = torch.randn(batch, 3, 8, 8)
     return text, images
+
+class AudioEncoder(nn.Module):
+    def __init__(self, dim = 32, input_dim = 16):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim)
+        )
+
+    def forward(self, audio):
+        return self.net(audio)
+
+def make_trilinear_data(batch = 4):
+    text = torch.randint(0, 100, (batch, 8))
+    video = torch.randn(batch, 2, 3, 8, 8)
+    audio = torch.randn(batch, 16)
+    return text, video, audio
+
+def make_extra_modality(dim = 32, input_dim = 16):
+    return {
+        'encoder': AudioEncoder(dim = dim, input_dim = input_dim),
+        'dim': dim,
+        'pool': 'none'
+    }
+
+def make_trilinear_clip(**kwargs):
+    return make_clip(
+        extra_modalities = {'audio': make_extra_modality()},
+        **kwargs
+    )
+
+def make_quadmodal_clip(**kwargs):
+    return make_clip(
+        extra_modalities = {
+            'audio': make_extra_modality(),
+            'depth': make_extra_modality()
+        },
+        **kwargs
+    )
 
 # e2e tests
 
@@ -100,6 +141,166 @@ def test_x_clip_multiview_e2e(aug_text, aug_image):
 
     assert torch.isfinite(loss)
     loss.backward()
+
+def test_x_clip_trilinear_text_video_audio():
+    clip = make_trilinear_clip(
+        extra_latent_projection = True,
+        spectral_loss_weight = 0.1,
+        asymmetric_infonce = True,
+        logsumexp_reg_loss_weight = 0.01,
+        negative_mse_loss_weight = 0.1
+    )
+
+    text, video, audio = make_trilinear_data()
+    loss = clip(text, video, modalities = {'audio': audio}, return_loss = True)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert any(p.grad is not None for p in clip.parameters())
+    assert clip.modalities['audio'].to_latent.weight.grad is not None
+
+def test_x_clip_trilinear_inference():
+    clip = make_trilinear_clip(extra_latent_projection = True)
+    clip.eval()
+
+    text, video, audio = make_trilinear_data()
+
+    with torch.no_grad():
+        sims = clip(text, video, modalities = {'audio': audio})
+
+    assert set(sims.keys()) == {('text', 'image'), ('text', 'audio'), ('image', 'audio')}
+    assert all(sim.shape == (4,) for sim in sims.values())
+
+def test_x_clip_trilinear_return_latents():
+    clip = make_trilinear_clip(extra_latent_projection = True)
+    clip.eval()
+
+    text, video, audio = make_trilinear_data()
+
+    with torch.no_grad():
+        base_latents, extra_latents = clip(text, video, modalities = {'audio': audio}, return_latents = True)
+
+    expected = {'text', 'image', 'audio'}
+    assert set(base_latents.keys()) == expected
+    assert set(extra_latents.keys()) == expected
+    assert all(latent.shape == (4, 16) for latent in base_latents.values())
+    assert all(latent.shape == (4, 16) for latent in extra_latents.values())
+
+def test_x_clip_trilinear_fine_grained():
+    clip = make_trilinear_clip(
+        use_all_token_embeds = True,
+        extra_latent_projection = True,
+        asymmetric_infonce = True,
+        logsumexp_reg_loss_weight = 0.01,
+        negative_mse_loss_weight = 0.1
+    )
+
+    text, video, audio = make_trilinear_data()
+    loss = clip(text, video, modalities = {'audio': audio}, return_loss = True)
+
+    assert torch.isfinite(loss)
+    loss.backward()
+
+def test_x_clip_quadmodal_text_video_audio_depth():
+    clip = make_quadmodal_clip(
+        extra_latent_projection = True,
+        spectral_loss_weight = 0.1,
+        asymmetric_infonce = True,
+        logsumexp_reg_loss_weight = 0.01,
+        negative_mse_loss_weight = 0.1
+    )
+
+    text, video, audio = make_trilinear_data()
+    depth = torch.randn(4, 16)
+
+    loss = clip(
+        text,
+        video,
+        modalities = {'audio': audio, 'depth': depth},
+        return_loss = True
+    )
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert clip.modalities['audio'].to_latent.weight.grad is not None
+    assert clip.modalities['depth'].to_latent.weight.grad is not None
+
+def test_x_clip_fully_custom_modalities():
+    caption_encoder = TextTransformer(
+        dim = 32,
+        num_tokens = 100,
+        max_seq_len = 8,
+        depth = 1,
+        heads = 2,
+        dim_head = 64
+    )
+
+    video_encoder = VisionTransformer(
+        dim = 32,
+        image_size = 8,
+        patch_size = 4,
+        channels = 3,
+        depth = 1,
+        heads = 2,
+        dim_head = 64,
+        patch_dropout = 0.1
+    )
+
+    clip = CLIP(
+        modalities = {
+            'caption': ModalityTower(
+                caption_encoder,
+                dim = 32,
+                dim_latent = 16,
+                pool = 'cls',
+                has_cls_token = True,
+                mask_fn = lambda x: x != 0,
+                pass_mask = True
+            ),
+            'video': ModalityTower(
+                video_encoder,
+                dim = 32,
+                dim_latent = 16,
+                pool = 'cls',
+                has_cls_token = True
+            ),
+            'audio': ModalityTower(
+                AudioEncoder(dim = 32),
+                dim = 32,
+                dim_latent = 16,
+                pool = 'none'
+            ),
+            'depth': ModalityTower(
+                AudioEncoder(dim = 32),
+                dim = 32,
+                dim_latent = 16,
+                pool = 'none'
+            )
+        },
+        dim_latent = 16,
+        extra_latent_projection = True,
+        spectral_loss_weight = 0.1,
+        asymmetric_infonce = True,
+        logsumexp_reg_loss_weight = 0.01,
+        negative_mse_loss_weight = 0.1
+    )
+
+    text, video, audio = make_trilinear_data()
+    depth = torch.randn(4, 16)
+
+    loss = clip(
+        modalities = {
+            'caption': text,
+            'video': video,
+            'audio': audio,
+            'depth': depth
+        },
+        return_loss = True
+    )
+
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert any(p.grad is not None for p in clip.parameters())
 
 def test_x_clip_fine_grained_e2e():
     clip = make_clip(

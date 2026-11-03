@@ -4,10 +4,8 @@ import torch.distributed as distributed
 
 from einops import rearrange
 
-def pad_dim_to(t, length, dim = 0):
-    pad_length = length - t.shape[dim]
-    zero_pairs = (-dim - 1) if dim < 0 else (t.ndim - dim - 1)
-    return F.pad(t, (*((0, 0) * zero_pairs), 0, pad_length))
+from torch_einops_utils import pad_at_dim
+from torch_einops_utils.torch_einops_utils import exists
 
 # distributed helpers
 
@@ -21,7 +19,7 @@ def all_gather_variable_dim(t, dim = 0, sizes = None):
         sizes = torch.stack(sizes)
 
     max_size = sizes.amax().item()
-    padded_t = pad_dim_to(t, max_size, dim = dim)
+    padded_t = pad_at_dim(t, (0, max_size - t.shape[dim]), dim = dim)
 
     gathered_tensors = [torch.empty(padded_t.shape, device = device, dtype = padded_t.dtype) for i in range(world_size)]
     distributed.all_gather(gathered_tensors, padded_t)
