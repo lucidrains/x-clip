@@ -342,7 +342,8 @@ class TextTransformer(nn.Module):
 
         rotary_pos_emb = None
         if exists(self.rotary_pos_emb):
-            rotary_pos_emb = self.rotary_pos_emb(n + 1, device = device)
+            seq_len = n + (1 if exists(self.cls_token) else 0)
+            rotary_pos_emb = self.rotary_pos_emb(seq_len, device = device)
 
         if exists(self.cls_token):
             cls_tokens = repeat(self.cls_token, 'd -> b 1 d', b = b)
