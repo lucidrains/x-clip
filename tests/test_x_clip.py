@@ -371,3 +371,37 @@ def test_spectral_contrastive_loss_formula():
 
     expected = -2 * pos + (neg ** 2).mean()
     assert torch.allclose(loss, expected)
+
+# rotary positional embeddings on causal (cls-token-free) text encoders
+
+def test_text_transformer_causal_rotary_pos_emb():
+    transformer = TextTransformer(
+        dim = 32,
+        num_tokens = 100,
+        max_seq_len = 8,
+        depth = 1,
+        heads = 2,
+        dim_head = 64,
+        causal = True,
+        rotary_pos_emb = True
+    )
+
+    text = torch.randint(0, 100, (2, 8))
+    out = transformer(text)
+
+    assert out.shape == (2, 8, 32)
+
+def test_x_clip_causal_rotary_text():
+    clip = make_clip(
+        text_rotary_pos_emb = True,
+        text_causal_mask = True,
+        text_eos_id = 1
+    )
+
+    text, images = make_data()
+    text[:, -1] = 1
+
+    loss = clip(text, images, return_loss = True)
+
+    assert torch.isfinite(loss)
+    loss.backward()
